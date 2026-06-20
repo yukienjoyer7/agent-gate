@@ -1,24 +1,53 @@
 services:
-  db:
-    image: postgres:17
+
+  postgres:
+    image: pgvector/pgvector:pg17
+
+    container_name: agentgate-postgres
+
+    restart: unless-stopped
+
     environment:
+      POSTGRES_DB: agentgate
       POSTGRES_USER: agentgate
       POSTGRES_PASSWORD: agentgate
-      POSTGRES_DB: agentgate
+
     ports:
       - "5432:5432"
+
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agentgate"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      - postgres_data:/var/lib/postgresql/data
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
+
+    container_name: agentgate-redis
+
+    restart: unless-stopped
+
     ports:
       - "6379:6379"
 
+  api:
+    build:
+      context: .
+
+    container_name: agentgate-api
+
+    restart: unless-stopped
+
+    ports:
+      - "8000:8000"
+
+    env_file:
+      - .env
+
+    depends_on:
+      - postgres
+      - redis
+
+    volumes:
+      - .:/app
+
 volumes:
-  pgdata:
+  postgres_data:
