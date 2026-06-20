@@ -10,7 +10,6 @@ dist/
 .venv/
 venv/
 env/
-
 # Environment / secrets
 .env
 .env.*

@@ -18,6 +18,12 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentgate"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7-alpine
 
@@ -28,6 +34,12 @@ services:
     ports:
       - "6379:6379"
 
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   api:
     build:
       context: .
@@ -36,18 +48,21 @@ services:
 
     restart: unless-stopped
 
-    ports:
-      - "8000:8000"
-
     env_file:
       - .env
 
-    depends_on:
-      - postgres
-      - redis
+    ports:
+      - "8000:8000"
 
     volumes:
       - .:/app
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
