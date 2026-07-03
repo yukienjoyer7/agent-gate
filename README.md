@@ -47,7 +47,18 @@ pytest
 | `app/workers/` | Async workers (future Redis queue) |
 | `deployment/` | Docker / Compose / nginx |
 
-Status: **Sprint 0 — repo foundation.** Domain logic lands in Sprint 1.
+Status: **Sprint 1 — guarded local/browser demo path.**
+
+## Sprint 1 demos
+
+```bash
+python scripts/run_demo_scenario.py local_file_read
+python scripts/run_demo_scenario.py browser_snapshot
+python scripts/export_audit.py --latest
+```
+
+Audit events append to `artifacts/audit/events.jsonl` by default. The browser
+path is a mock skeleton until the Playwright executor is hardened.
 
 ## Contributing
 

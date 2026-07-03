@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
     STRIPE_API_KEY: str = ""
+    LOCAL_FILE_ROOT: str = "demo_data"
+
+    # Audit
+    AUDIT_LOG_PATH: str = "artifacts/audit/events.jsonl"
 
 
 @lru_cache

@@ -26,6 +26,9 @@ htmlcov/
 /test-results/
 /playwright-report/
 
+# Runtime artifacts
+/artifacts/audit/
+
 # IDE / OS
 .idea/
 .vscode/
