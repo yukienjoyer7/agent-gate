@@ -28,6 +28,7 @@ htmlcov/
 
 # Runtime artifacts
 /artifacts/audit/
+/artifacts/traces/
 
 # IDE / OS
 .idea/

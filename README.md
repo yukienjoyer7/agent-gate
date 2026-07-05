@@ -55,10 +55,12 @@ Status: **Sprint 1 — guarded local/browser demo path.**
 python scripts/run_demo_scenario.py local_file_read
 python scripts/run_demo_scenario.py browser_snapshot
 python scripts/export_audit.py --latest
+python scripts/export_traces.py --latest
 ```
 
-Audit events append to `artifacts/audit/events.jsonl` by default. The browser
-path is a mock skeleton until the Playwright executor is hardened.
+Audit events append to `artifacts/audit/events.jsonl` by default. Action traces
+append to `artifacts/traces/actions.jsonl`. The browser path is a mock skeleton
+until the Playwright executor is hardened.
 
 ## Contributing
 

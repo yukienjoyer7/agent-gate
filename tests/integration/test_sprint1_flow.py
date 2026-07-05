@@ -3,6 +3,7 @@ import asyncio
 from app.config.settings import get_settings
 from app.domains.agent.services import run_guarded_action
 from app.domains.audit.repositories import AuditRepository
+from app.tracing import TraceWriter
 
 
 def test_guarded_local_file_flow(tmp_path, monkeypatch):
@@ -22,12 +23,14 @@ def test_guarded_local_file_flow(tmp_path, monkeypatch):
                 "payload": {"action": "read", "path": "sample.txt"},
             },
             audit=AuditRepository(str(tmp_path / "audit.jsonl")),
+            traces=TraceWriter(str(tmp_path / "traces.jsonl")),
         )
     )
 
     assert event.execution_status == "SUCCESS"
     assert event.request_json["target_system"] == "local_file"
     assert event.execution_json["data"]["content_preview"] == "hello"
+    assert event.latency["total_ms"] >= 0
 
 
 def test_guarded_browser_snapshot_flow(tmp_path):
@@ -40,6 +43,7 @@ def test_guarded_browser_snapshot_flow(tmp_path):
                 "payload": {"url": "https://example.test/demo"},
             },
             audit=AuditRepository(str(tmp_path / "audit.jsonl")),
+            traces=TraceWriter(str(tmp_path / "traces.jsonl")),
         )
     )
 

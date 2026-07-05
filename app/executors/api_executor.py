@@ -14,6 +14,17 @@ class APIExecutor:
         }
 
     async def execute(self, action: ActionRequest) -> ExecutionResult:
+        connector_action = action.payload.get("action")
+        if not connector_action:
+            return ExecutionResult(
+                run_id=action.run_id,
+                action_id=action.action_id,
+                executor="api",
+                status=ExecutionStatus.FAILED,
+                result_summary="missing connector action",
+                error=ConnectorError.validation("missing connector action").model_dump(mode="json"),
+            )
+
         connector = self.connectors.get(action.target_system)
         if connector is None:
             return ExecutionResult(
@@ -25,4 +36,4 @@ class APIExecutor:
                 error=ConnectorError.validation("unknown connector").model_dump(mode="json"),
             )
         payload = {"run_id": action.run_id, "action_id": action.action_id, **action.payload}
-        return await connector.execute(action.payload.get("action", "read"), payload)
+        return await connector.execute(connector_action, payload)

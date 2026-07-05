@@ -609,6 +609,7 @@ At least one API/local scenario and one browser scenario complete end-to-end wit
 ## Sprint 2 — Executor Pipelines and Action Traces
 
 **Dates:** 2026-08-10 to 2026-08-23  
+**Status:** Implemented as a JSONL trace/read-endpoint layer on 2026-07-03.  
 **Sprint goal:** Build stable API/browser executor pipelines, service contracts, versioned logs, and model-ready action traces.
 
 ### Deliverables
@@ -633,20 +634,20 @@ Implement JSONL trace export and backend endpoints for runs, actions, audit even
 
 ### Backlog
 
-| ID | Priority | Task | Output | Acceptance criteria |
-|---|---:|---|---|---|
-| DE-S2-01 | P0 | Harden API executor pipeline | `executors/api_executor.py` | Validated request in, normalized result out |
-| DE-S2-02 | P0 | Harden browser executor pipeline | `executors/browser_executor.py` | open/snapshot/click/type/select/submit/screenshot contracts exist |
-| DE-S2-03 | P0 | Add run/action ID propagation | core/executor/audit | All logs and traces include IDs |
-| DE-S2-04 | P0 | Add latency tracker | `tracing/latency.py` | Captures per-stage timings |
-| DE-S2-05 | P0 | Add trace writer | `tracing/trace_writer.py` | Writes JSONL traces per run |
-| DE-S2-06 | P0 | Add run history endpoint | `api/routes_runs.py` | FE can list runs |
-| DE-S2-07 | P0 | Add action detail endpoint | `api/routes_actions.py` | FE can inspect action request/decision/result |
-| DE-S2-08 | P0 | Add audit endpoint | `api/routes_audit.py` | FE/DA can query audit events |
-| DE-S2-09 | P1 | Add approval queue data endpoint | `api/routes_approvals.py` | Returns pending approval records |
-| DE-S2-10 | P1 | Add benchmark endpoint | `api/routes_benchmarks.py` | Returns latest benchmark summaries |
-| DE-S2-11 | P0 | Add trace export script | `scripts/export_traces.py` | Exports JSONL for DS/DA evaluation |
-| DE-S2-12 | P1 | Document service contracts | `docs/service-contracts.md` | FE/DS can integrate without guessing fields |
+| ID | Status | Priority | Task | Output | Acceptance criteria |
+|---|---|---:|---|---|---|
+| DE-S2-01 | Done | P0 | Harden API executor pipeline | `app/executors/api_executor.py` | Validated request in, normalized result out |
+| DE-S2-02 | Done | P0 | Harden browser executor pipeline | `app/executors/browser_executor.py` | open/snapshot/click/type/select/submit/screenshot contracts exist as mock-safe results |
+| DE-S2-03 | Done | P0 | Add run/action ID propagation | core/executor/audit/trace | All logs and traces include IDs |
+| DE-S2-04 | Done | P0 | Add latency tracker | `app/tracing/latency.py` | Captures per-stage timings |
+| DE-S2-05 | Done | P0 | Add trace writer | `app/tracing/trace_writer.py` | Writes JSONL traces per action |
+| DE-S2-06 | Done | P0 | Add run history endpoint | `app/api/v1/runs.py` | FE can list runs |
+| DE-S2-07 | Done | P0 | Add action detail endpoint | `app/api/v1/actions.py` | FE can inspect action request/decision/result |
+| DE-S2-08 | Done | P0 | Add audit endpoint | `app/api/v1/audits.py` | FE/DA can query audit events |
+| DE-S2-09 | Done | P1 | Add approval queue data endpoint | `app/api/v1/approvals.py` | Returns pending approval records |
+| DE-S2-10 | Done | P1 | Add benchmark endpoint | `app/api/v1/benchmark.py` | Returns latest benchmark summaries |
+| DE-S2-11 | Done | P0 | Add trace export script | `scripts/export_traces.py` | Exports JSONL for DS/DA evaluation |
+| DE-S2-12 | Done | P1 | Document service contracts | `docs/service-contracts.md` | FE/DS can integrate without guessing fields |
 
 ### Exit criteria
 

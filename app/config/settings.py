@@ -34,6 +34,7 @@ class Settings(BaseSettings):
 
     # Audit
     AUDIT_LOG_PATH: str = "artifacts/audit/events.jsonl"
+    TRACE_LOG_PATH: str = "artifacts/traces/actions.jsonl"
 
 
 @lru_cache

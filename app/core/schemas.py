@@ -111,3 +111,18 @@ class AuditEvent(BaseModel):
     detector_version: str = "detector-0.1"
     latency: dict[str, int] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class ActionTrace(BaseModel):
+    schema_version: Literal["0.1"] = SCHEMA_VERSION
+    run_id: str
+    action_id: str
+    user_goal: str = ""
+    raw_tool_call: dict[str, Any]
+    action_request: dict[str, Any]
+    decision: dict[str, Any]
+    execution: dict[str, Any]
+    audit: dict[str, Any]
+    latency: dict[str, int]
+    final_status: ExecutionStatus
+    created_at: datetime = Field(default_factory=utc_now)
