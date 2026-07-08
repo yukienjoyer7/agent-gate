@@ -2,18 +2,13 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg17
-
     container_name: agentgate-postgres
-
     restart: unless-stopped
 
     environment:
       POSTGRES_DB: agentgate
       POSTGRES_USER: agentgate
-      POSTGRES_PASSWORD: agentgate
-
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-agentgate}
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -24,32 +19,24 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-
-    container_name: agentgate-redis
-
-    restart: unless-stopped
-
-    ports:
-      - "6379:6379"
-
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    networks:
+      - agentgate-network
 
   api:
     build:
       context: .
+      dockerfile: Dockerfile
 
     container_name: agentgate-api
-
     restart: unless-stopped
 
+    # Uses .env as the active config. For local development:
+    #   cp .env.development .env
     env_file:
       - .env
+    # Override DATABASE_URL for Docker networking (service name, not localhost)
+    environment:
+      DATABASE_URL: postgresql+psycopg://agentgate:agentgate@postgres:5432/agentgate
 
     ports:
       - "8000:8000"
@@ -61,8 +48,15 @@ services:
       postgres:
         condition: service_healthy
 
-      redis:
-        condition: service_healthy
+    user: "1000:1000"
+
+    networks:
+      - agentgate-network
 
 volumes:
   postgres_data:
+
+networks:
+  agentgate-network:
+    driver: bridge
+    internal: false

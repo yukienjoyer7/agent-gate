@@ -14,6 +14,10 @@ env/
 .env
 .env.*
 !.env.example
+!.env.development
+!.env.staging
+# .env.production
+
 
 # Tooling caches
 .pytest_cache/
@@ -34,3 +38,4 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+.marscode/

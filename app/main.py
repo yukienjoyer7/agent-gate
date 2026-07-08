@@ -1,8 +1,12 @@
+import logging
+
 from fastapi import FastAPI
 
 from app.api.v1 import actions, approvals, audits, benchmark, health, runs
 from app.config.logging import configure_logging
 from app.config.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -24,7 +28,22 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def root() -> dict[str, str]:
-        return {"service": "agentgate", "env": settings.APP_ENV}
+        return {
+            "service": "agentgate",
+            "env": settings.APP_ENV,
+            "version": "0.1.0",
+        }
+
+    @app.on_event("startup")
+    async def on_startup() -> None:
+        logger.info(
+            "AgentGate starting",
+            extra={
+                "env": settings.APP_ENV,
+                "debug": settings.DEBUG,
+                "log_level": settings.LOG_LEVEL,
+            },
+        )
 
     return app
 

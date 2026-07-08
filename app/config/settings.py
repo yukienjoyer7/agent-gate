@@ -1,5 +1,10 @@
-from functools import lru_cache
+from __future__ import annotations
 
+import os
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,33 +15,93 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        case_sensitive=True,
     )
 
-    # Core
-    APP_ENV: str = "development"
-    LOG_LEVEL: str = "INFO"
+    # Environment Identity
+    APP_NAME: str = "AgentGate"
+    APP_ENV: Literal["development", "staging", "production"] = "development"
+    DEBUG: bool = False
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     # Database
     DATABASE_URL: str = "postgresql+psycopg://agentgate:agentgate@localhost:5432/agentgate"
+    DATABASE_POOL_SIZE: int = Field(default=10, ge=1, le=100)
+    DATABASE_MAX_OVERFLOW: int = Field(default=20, ge=0)
 
-    # Queue
-    REDIS_URL: str = "redis://localhost:6379/0"
-
-    # LLM providers
-    OPENAI_API_KEY: str = ""
-    ANTHROPIC_API_KEY: str = ""
-
-    # Connectors
+    # Connector Credentials
     GITHUB_TOKEN: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
-    STRIPE_API_KEY: str = ""
-    LOCAL_FILE_ROOT: str = "demo_data"
+    XENDIT_API_KEY: str = ""
+    GMAIL_CREDENTIALS_PATH: str = "credentials/gmail_token.json"
 
-    # Audit
+    # Filesystem
+    LOCAL_FILE_ROOT: str = "demo_data"
+    ALLOWED_FILESYSTEM_PATHS: list[str] = ["/tmp/agentgate"]
+
+    # Browser / Playwright
+    PLAYWRIGHT_HEADLESS: bool = True
+    PLAYWRIGHT_MAX_ELEMENTS: int = Field(default=50, ge=10, le=200)
+    BROWSER_MAX_CONCURRENT_SESSIONS: int = Field(default=10, ge=1, le=100)
+
+    # Data & Storage
     AUDIT_LOG_PATH: str = "artifacts/audit/events.jsonl"
     TRACE_LOG_PATH: str = "artifacts/traces/actions.jsonl"
+    AUDIT_RETENTION_DAYS: int = Field(default=7, ge=1, le=365)
+    TRACE_RETENTION_DAYS: int = Field(default=7, ge=1, le=365)
+    SCREENSHOT_RETENTION_DAYS: int = Field(default=7, ge=0, le=365)
+    DATA_DIR: str = "./data"
+
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def validate_db_url(cls, v: str) -> str:
+        if v.startswith("sqlite"):
+            return v
+        if not v.startswith("postgresql"):
+            raise ValueError(
+                f"DATABASE_URL must start with 'postgresql' or 'sqlite', got: {v[:30]}..."
+            )
+        return v
+
+    @field_validator("ALLOWED_FILESYSTEM_PATHS", mode="before")
+    @classmethod
+    def validate_paths(cls, v: list[str]) -> list[str]:
+        if isinstance(v, str):
+            v = [p.strip() for p in v.split(",") if p.strip()]
+        for path in v:
+            if not os.path.isabs(path):
+                raise ValueError(f"ALLOWED_FILESYSTEM_PATHS must be absolute: {path}")
+        return v
 
 
-@lru_cache
+def _resolve_settings_class(env: str) -> type[Settings]:
+    """Return the correct Settings subclass for the given environment."""
+    if env == "development":
+        from app.config.development import DevelopmentSettings
+
+        return DevelopmentSettings
+    if env == "staging":
+        from app.config.staging import StagingSettings
+
+        return StagingSettings
+    if env == "production":
+        from app.config.production import ProductionSettings
+
+        return ProductionSettings
+    return Settings
+
+
+@lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    """Return the Settings instance for the active environment.
+
+    - Reads ``APP_ENV`` from the environment to select the correct subclass.
+    - Subclasses are lazily imported from ``app/config/{development,staging,production}.py``.
+    - Environment variables from ``.env`` (or system env) are layered on top of defaults.
+
+    In tests, call ``get_settings.cache_clear()`` after changing ``APP_ENV`` via
+    ``monkeypatch`` to force re-instantiation.
+    """
+    raw_env = os.environ.get("APP_ENV", "development")
+    settings_cls = _resolve_settings_class(raw_env)
+    return settings_cls()
