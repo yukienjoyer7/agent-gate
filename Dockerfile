@@ -44,6 +44,12 @@ COPY --from=builder /opt/venv /opt/venv
 
 RUN useradd -m -u 1000 appuser
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+RUN mkdir -p /ms-playwright \
+    && chown -R appuser:appuser /ms-playwright \
+    && python -m playwright install --with-deps chromium
+
 WORKDIR /app
 
 COPY app/ ./app/
