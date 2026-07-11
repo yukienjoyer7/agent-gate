@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -9,6 +10,12 @@ from alembic import context
 
 from app.config.settings import get_settings
 from app.database.base import Base
+
+if sys.platform == "win32":
+    # psycopg's async mode cannot run on Windows' default ProactorEventLoop.
+    # Must be set before any event loop is created (i.e. before asyncio.run()
+    # is called further down in run_migrations_online()).
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # Import models so their tables register on Base.metadata for autogenerate.
 # TODO(Sprint 1): import app.models.* here as ORM models are added.

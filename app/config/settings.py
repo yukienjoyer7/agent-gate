@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     BROWSER_MAX_CONCURRENT_SESSIONS: int = Field(default=10, ge=1, le=100)
 
     # Data & Storage
+    # AUDIT_BACKEND: "postgres" (default -- action-sourced, writes to
+    # audit_logs via migration 0001) or "jsonl" (Sprint 1/2 fallback, no DB
+    # required -- kept as an escape hatch, e.g. local dev without a DB, or
+    # rollback if the postgres path breaks).
+    AUDIT_BACKEND: Literal["jsonl", "postgres"] = "postgres"
     AUDIT_LOG_PATH: str = "artifacts/audit/events.jsonl"
     TRACE_LOG_PATH: str = "artifacts/traces/actions.jsonl"
     AUDIT_RETENTION_DAYS: int = Field(default=7, ge=1, le=365)

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.domains.audit.repositories import AuditRepository
+from app.domains.audit.repositories import get_audit_repository
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -8,7 +8,7 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 @router.get("")
 async def list_runs() -> list[dict]:
     runs: dict[str, dict] = {}
-    for event in AuditRepository().list():
+    for event in await get_audit_repository().list():
         current = runs.setdefault(
             event.run_id,
             {"run_id": event.run_id, "action_count": 0, "latest_status": event.execution_status},
@@ -21,4 +21,4 @@ async def list_runs() -> list[dict]:
 
 @router.get("/{run_id}/actions")
 async def list_run_actions(run_id: str) -> list[dict]:
-    return [event.model_dump(mode="json") for event in AuditRepository().by_run(run_id)]
+    return [event.model_dump(mode="json") for event in await get_audit_repository().by_run(run_id)]

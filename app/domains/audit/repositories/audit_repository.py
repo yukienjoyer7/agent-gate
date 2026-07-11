@@ -11,7 +11,7 @@ class AuditRepository:
     def __init__(self, path: str | None = None) -> None:
         self.path = Path(path or get_settings().AUDIT_LOG_PATH)
 
-    def write(
+    async def write(
         self,
         request: ActionRequest,
         decision: DecisionResponse,
@@ -34,7 +34,7 @@ class AuditRepository:
             handle.write(json.dumps(event.model_dump(mode="json")) + "\n")
         return event
 
-    def latest(self) -> AuditEvent | None:
+    async def latest(self) -> AuditEvent | None:
         if not self.path.exists():
             return None
         lines = [line for line in self.path.read_text(encoding="utf-8").splitlines() if line]
@@ -42,7 +42,7 @@ class AuditRepository:
             return None
         return AuditEvent.model_validate_json(lines[-1])
 
-    def list(self) -> list[AuditEvent]:
+    async def list(self) -> list[AuditEvent]:
         if not self.path.exists():
             return []
         return [
@@ -51,8 +51,8 @@ class AuditRepository:
             if line
         ]
 
-    def by_run(self, run_id: str) -> list[AuditEvent]:
-        return [event for event in self.list() if event.run_id == run_id]
+    async def by_run(self, run_id: str) -> list[AuditEvent]:
+        return [event for event in await self.list() if event.run_id == run_id]
 
-    def by_action(self, action_id: str) -> AuditEvent | None:
-        return next((event for event in self.list() if event.action_id == action_id), None)
+    async def by_action(self, action_id: str) -> AuditEvent | None:
+        return next((event for event in await self.list() if event.action_id == action_id), None)

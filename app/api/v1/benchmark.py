@@ -1,13 +1,13 @@
 from fastapi import APIRouter
 
-from app.domains.audit.repositories import AuditRepository
+from app.domains.audit.repositories import get_audit_repository
 
 router = APIRouter(tags=["benchmark"])
 
 
 @router.get("/benchmark")
 async def benchmark_summary() -> dict:
-    events = AuditRepository().list()
+    events = await get_audit_repository().list()
     totals = [event.latency.get("total_ms", 0) for event in events]
     return {
         "action_count": len(events),

@@ -1,6 +1,6 @@
 from app.core.action_request import build_action_request
 from app.core.schemas import ActionTrace, AuditEvent
-from app.domains.audit.repositories import AuditRepository
+from app.domains.audit.repositories import get_audit_repository
 from app.domains.guardrail.decision import decide
 from app.executors import ExecutionRouter
 from app.tracing import LatencyTracker, TraceWriter
@@ -8,7 +8,7 @@ from app.tracing import LatencyTracker, TraceWriter
 
 async def run_guarded_action(
     proposal: dict,
-    audit: AuditRepository | None = None,
+    audit=None,
     traces: TraceWriter | None = None,
 ) -> AuditEvent:
     latency = LatencyTracker()
@@ -27,7 +27,7 @@ async def run_guarded_action(
     latency.start("audit_write")
     audit_latency = latency.values()
     audit_latency["audit_write_ms"] = 0
-    event = (audit or AuditRepository()).write(request, decision, execution, audit_latency)
+    event = await (audit or get_audit_repository()).write(request, decision, execution, audit_latency)
     latency.stop("audit_write")
 
     (traces or TraceWriter()).write(
