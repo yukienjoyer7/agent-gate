@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import httpx
 
 from app.config.settings import get_settings
@@ -139,3 +140,19 @@ def github_error(run_id: str, action_id: str, status_code: int) -> ExecutionResu
         f"GitHub returned HTTP {status_code}",
         ConnectorErrorCode.UNKNOWN,
     )
+=======
+from app.core.schemas import ExecutionResult, ExecutionStatus
+from app.domains.connector.base import BaseConnector
+
+
+class GitHubConnector(BaseConnector):
+    async def execute(self, action: str, payload: dict) -> ExecutionResult:
+        return ExecutionResult(
+            run_id=payload["run_id"],
+            action_id=payload["action_id"],
+            executor="github",
+            status=ExecutionStatus.SUCCESS,
+            result_summary=f"Mock GitHub {action} completed",
+            data={"mode": "mock", "action": action, "repo": payload.get("repo", "")},
+        )
+>>>>>>> bb636b9 (feat: adding browser executor demo file and additional recovery feature)
