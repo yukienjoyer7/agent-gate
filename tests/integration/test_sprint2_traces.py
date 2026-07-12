@@ -10,6 +10,7 @@ def test_guarded_action_writes_model_ready_trace(tmp_path, monkeypatch):
     root.mkdir()
     (root / "sample.txt").write_text("hello", encoding="utf-8")
     trace_path = tmp_path / "traces.jsonl"
+    monkeypatch.setenv("AUDIT_BACKEND", "jsonl")
     monkeypatch.setenv("LOCAL_FILE_ROOT", str(root))
     monkeypatch.setenv("AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("TRACE_LOG_PATH", str(trace_path))
