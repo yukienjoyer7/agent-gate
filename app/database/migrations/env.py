@@ -18,7 +18,8 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # Import models so their tables register on Base.metadata for autogenerate.
-# TODO(Sprint 1): import app.models.* here as ORM models are added.
+# This keeps the ORM model definitions and Alembic metadata aligned.
+from app.database.models import AuditLog  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
