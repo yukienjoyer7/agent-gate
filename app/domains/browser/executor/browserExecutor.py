@@ -23,6 +23,8 @@ Locator Ranker.
 """
 
 from pathlib import Path
+
+import asyncio
 from app.domains.browser.executor.actionability import ensure_actionable
 from app.domains.browser.executor.locatorResolver import resolve_locator
 
@@ -71,21 +73,45 @@ async def fill(
 async def scroll(
     page,
     selector_map,
-    element_id
+    element_id=None,
+    *,
+    x=0,
+    y=0,
+    duration_ms=0
 ):
 
-    locator = await resolve_locator(
-        page,
-        selector_map,
-        element_id
-    )
+    if element_id:
+        locator = await resolve_locator(
+            page,
+            selector_map,
+            element_id
+        )
 
-    await ensure_actionable(
-        page,
-        locator
-    )
+        await ensure_actionable(
+            page,
+            locator
+        )
 
-    await locator.scroll_into_view_if_needed()
+        await locator.scroll_into_view_if_needed()
+        return
+
+    if duration_ms and (x or y):
+        steps = max(1, duration_ms // 50)
+        step_x = x / steps
+        step_y = y / steps
+        for _ in range(steps):
+            await page.mouse.wheel(step_x, step_y)
+            await asyncio.sleep(0.05)
+        return
+
+    if action.get("top"):
+        await page.evaluate("window.scrollTo(0, 0)")
+        return
+
+    await page.evaluate(
+        "(args) => window.scrollBy(args.x, args.y)",
+        {"x": x, "y": y},
+    )
 
 # Screenshot
 async def screenshot(
@@ -135,7 +161,10 @@ async def execute_action(
         await scroll(
             page,
             selector_map,
-            action["element_id"]
+            action.get("element_id"),
+            x=action.get("x", 0),
+            y=action.get("y", 0),
+            duration_ms=action.get("duration_ms", 0),
         )
 
     elif action_type == "screenshot":

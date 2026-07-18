@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
@@ -41,6 +42,7 @@ async def run_browser_prototype_agent(
     risk_hint: str = "unknown",
     timeout_ms: int = 15_000,
     wait_until: str = "domcontentloaded",
+    settle_ms: int = 0,
 ) -> AuditEvent:
     """
     Browser prototype agent:
@@ -118,8 +120,26 @@ async def _execute_with_browser(
             ],
         )
         try:
-            page = await browser.new_page()
+            page = await browser.new_page(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                ),
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": (
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                        "image/avif,image/webp,*/*;q=0.8"
+                    ),
+                    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                    "Upgrade-Insecure-Requests": "1",
+                },
+            )
             await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            if settle_ms:
+                await asyncio.sleep(settle_ms / 1000)
 
             initial_page_model = await _build_page_model(page)
             page_model = initial_page_model
@@ -138,6 +158,9 @@ async def _execute_with_browser(
                     continue
 
                 await execute_action(page, page_model.selector_map, executable_action)
+                delay_ms = browser_action.get("delay_ms")
+                if delay_ms:
+                    await asyncio.sleep(delay_ms / 1000)
                 executable_actions.append(executable_action)
                 action_results.append(
                     {
@@ -221,6 +244,9 @@ def _prepare_action(
     if action_type == "screenshot":
         suffix = f"_{action_index:02d}" if action_index is not None else ""
         prepared.setdefault("path", f"data/browser/screenshots/{action_id}{suffix}.png")
+        return prepared
+
+    if action_type == "scroll" and not (prepared.get("element_id") or prepared.get("label")):
         return prepared
 
     prepared["element_id"] = str(

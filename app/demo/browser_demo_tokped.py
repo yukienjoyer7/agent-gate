@@ -11,14 +11,16 @@ from app.domains.agent.services.browser_prototype_agent import (  # noqa: E402
     run_browser_prototype_agent,
 )
 
-URL = "https://playwright.dev"
-OUTPUT_DIR = "artifacts/browser_demo"
+URL = "https://www.shopee.co.id"
+OUTPUT_DIR = "artifacts/browser_demo_tokped"
 
 
 async def main() -> None:
     artifact_result = await capture_browser_artifacts(
         url=URL,
         output_dir=OUTPUT_DIR,
+        wait_until="load",
+        timeout_ms=60_000,
     )
     print("Captured browser artifacts:")
     print(artifact_result)
@@ -26,26 +28,38 @@ async def main() -> None:
     try:
         result = await run_browser_prototype_agent(
             url=URL,
+            timeout_ms=60_000,
+            wait_until="load",
+            settle_ms=20000,
             actions=[
                 {
                     "type": "screenshot",
-                    "path": f"{OUTPUT_DIR}/initial_page.png",
+                    "path": f"{OUTPUT_DIR}/open_initial.png",
+                    "delay_ms": 2000,
+                },
+                {
+                    "type": "scroll",
+                    "y": 2000,
+                    "duration_ms": 5000,
+                },
+                {
+                    "type": "scroll",
+                    "top": True,
+                },
+                {
+                    "type": "screenshot",
+                    "path": f"{OUTPUT_DIR}/initial_snapshot.png",
+                    "delay_ms": 500,
                 },
                 {
                     "type": "click",
-                    "label": "Switch between dark and light mode (currently system mode)",
+                    "label": "Masuk",
+                    "delay_ms": 2000,
                 },
                 {
                     "type": "screenshot",
                     "path": f"{OUTPUT_DIR}/after_click_1.png",
-                },
-                {
-                    "type": "click",
-                    "label": "Switch between dark and light mode (currently light mode)",
-                },
-                {
-                    "type": "screenshot",
-                    "path": f"{OUTPUT_DIR}/after_click_2.png",
+                    "delay_ms": 500,
                 },
             ],
         )
