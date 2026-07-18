@@ -11,7 +11,7 @@ from app.domains.agent.services.browser_prototype_agent import (  # noqa: E402
     run_browser_prototype_agent,
 )
 
-URL = "https://playwright.dev"
+URL = "https://tokopedia.com"
 OUTPUT_DIR = "artifacts/browser_demo"
 
 
@@ -33,7 +33,7 @@ async def main() -> None:
                 },
                 {
                     "type": "click",
-                    "label": "Switch between dark and light mode (currently system mode)",
+                    "label": "Masuk",
                 },
                 {
                     "type": "screenshot",

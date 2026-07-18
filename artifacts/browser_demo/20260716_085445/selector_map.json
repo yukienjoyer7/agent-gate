@@ -1,0 +1,461 @@
+{
+  "1": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Skip to main content"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Skip to main content"
+      }
+    ]
+  },
+  "2": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Playwright logo Playwright"
+    },
+    "fallbacks": []
+  },
+  "3": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Docs"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Docs"
+      }
+    ]
+  },
+  "4": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "API"
+    },
+    "fallbacks": []
+  },
+  "5": {
+    "primary": {
+      "strategy": "role",
+      "role": "button",
+      "name": "Node.js"
+    },
+    "fallbacks": []
+  },
+  "6": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "GitHub repository"
+    },
+    "fallbacks": [
+      {
+        "strategy": "label",
+        "value": "GitHub repository"
+      }
+    ]
+  },
+  "7": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Discord server"
+    },
+    "fallbacks": [
+      {
+        "strategy": "label",
+        "value": "Discord server"
+      }
+    ]
+  },
+  "8": {
+    "primary": {
+      "strategy": "role",
+      "role": "button",
+      "name": "Switch between dark and light mode (currently system mode)"
+    },
+    "fallbacks": [
+      {
+        "strategy": "label",
+        "value": "Switch between dark and light mode (currently system mode)"
+      }
+    ]
+  },
+  "9": {
+    "primary": {
+      "strategy": "role",
+      "role": "button",
+      "name": "Search (Control+k)"
+    },
+    "fallbacks": [
+      {
+        "strategy": "label",
+        "value": "Search (Control+k)"
+      }
+    ]
+  },
+  "10": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "TypeScript"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "TypeScript"
+      }
+    ]
+  },
+  "11": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Get started"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Get started"
+      }
+    ]
+  },
+  "12": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Star microsoft/playwright on GitHub"
+    },
+    "fallbacks": [
+      {
+        "strategy": "label",
+        "value": "Star microsoft/playwright on GitHub"
+      }
+    ]
+  },
+  "13": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "92k+ stargazers on GitHub"
+    },
+    "fallbacks": [
+      {
+        "strategy": "label",
+        "value": "92k+ stargazers on GitHub"
+      },
+      {
+        "strategy": "text",
+        "value": "92k+"
+      }
+    ]
+  },
+  "14": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Testing documentation"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Testing documentation"
+      }
+    ]
+  },
+  "15": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "CLI documentation"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "CLI documentation"
+      }
+    ]
+  },
+  "16": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "MCP documentation"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "MCP documentation"
+      }
+    ]
+  },
+  "17": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Model Context Protocol"
+    },
+    "fallbacks": []
+  },
+  "18": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Test generator"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Test generator"
+      }
+    ]
+  },
+  "19": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Trace Viewer"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Trace Viewer"
+      }
+    ]
+  },
+  "20": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "VS Code extension"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "VS Code extension"
+      }
+    ]
+  },
+  "21": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Bing"
+    },
+    "fallbacks": []
+  },
+  "22": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Outlook"
+    },
+    "fallbacks": []
+  },
+  "23": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Disney+ Hotstar"
+    },
+    "fallbacks": []
+  },
+  "24": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Material UI"
+    },
+    "fallbacks": []
+  },
+  "25": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Adobe"
+    },
+    "fallbacks": []
+  },
+  "26": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "React Navigation"
+    },
+    "fallbacks": []
+  },
+  "27": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Accessibility Insights"
+    },
+    "fallbacks": []
+  },
+  "28": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Getting started"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Getting started"
+      }
+    ]
+  },
+  "29": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Playwright Training(opens in new tab)"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Playwright Training"
+      }
+    ]
+  },
+  "30": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Learn Videos"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Learn Videos"
+      }
+    ]
+  },
+  "31": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Feature Videos"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Feature Videos"
+      }
+    ]
+  },
+  "32": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Stack Overflow(opens in new tab)"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Stack Overflow"
+      }
+    ]
+  },
+  "33": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Discord(opens in new tab)"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Discord"
+      }
+    ]
+  },
+  "34": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "X(opens in new tab)"
+    },
+    "fallbacks": []
+  },
+  "35": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "LinkedIn(opens in new tab)"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "LinkedIn"
+      }
+    ]
+  },
+  "36": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "GitHub(opens in new tab)"
+    },
+    "fallbacks": []
+  },
+  "37": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "YouTube(opens in new tab)"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "YouTube"
+      }
+    ]
+  },
+  "38": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Blog(opens in new tab)"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Blog"
+      }
+    ]
+  },
+  "39": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Ambassadors"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Ambassadors"
+      }
+    ]
+  },
+  "40": {
+    "primary": {
+      "strategy": "role",
+      "role": "link",
+      "name": "Microsoft Privacy Statement(opens in new tab)"
+    },
+    "fallbacks": [
+      {
+        "strategy": "text",
+        "value": "Microsoft Privacy Statement"
+      }
+    ]
+  }
+}
