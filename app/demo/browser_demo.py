@@ -11,7 +11,7 @@ from app.domains.agent.services.browser_prototype_agent import (  # noqa: E402
     run_browser_prototype_agent,
 )
 
-URL = "https://tokopedia.com"
+URL = "https://playwright.dev"
 OUTPUT_DIR = "artifacts/browser_demo"
 
 
@@ -32,22 +32,26 @@ async def main() -> None:
                     "path": f"{OUTPUT_DIR}/initial_page.png",
                 },
                 {
-                    "type": "click",
-                    "label": "Masuk",
-                },
-                {
                     "type": "screenshot",
                     "path": f"{OUTPUT_DIR}/after_click_1.png",
                 },
                 {
                     "type": "click",
+                    "label": "Switch between dark and light mode (currently system mode)",
+                },
+                {
+                    "type": "click",
                     "label": "Switch between dark and light mode (currently light mode)",
                 },
+                
                 {
                     "type": "screenshot",
                     "path": f"{OUTPUT_DIR}/after_click_2.png",
                 },
             ],
+            # timeout_ms=60_000,
+            wait_until="load",
+            # settle_ms=20000,
         )
     except Exception as exc:  # pragma: no cover - demo resilience
         print("Browser prototype agent failed:")

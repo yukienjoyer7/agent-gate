@@ -86,6 +86,7 @@ async def run_browser_prototype_agent(
             actions=browser_actions,
             timeout_ms=timeout_ms,
             wait_until=wait_until,
+            settle_ms=settle_ms,
         )
     except Exception as exc:
         execution = ExecutionResult(
@@ -107,6 +108,7 @@ async def _execute_with_browser(
     actions: list[dict[str, Any]],
     timeout_ms: int,
     wait_until: str,
+    settle_ms: int = 0,
 ) -> ExecutionResult:
     started = perf_counter()
     settings = get_settings()
