@@ -2,7 +2,7 @@ import logging
 
 from fastapi import FastAPI
 
-from app.api.v1 import actions, approvals, audits, benchmark, health, runs
+from app.api.v1 import actions, approvals, audits, benchmark, chat, health, runs
 from app.config.logging import configure_logging
 from app.config.settings import get_settings
 
@@ -25,6 +25,7 @@ def create_app() -> FastAPI:
     app.include_router(audits.router, prefix="/api/v1")
     app.include_router(approvals.router, prefix="/api/v1")
     app.include_router(benchmark.router, prefix="/api/v1")
+    app.include_router(chat.router, prefix="/api/v1")
 
     @app.get("/")
     async def root() -> dict[str, str]:

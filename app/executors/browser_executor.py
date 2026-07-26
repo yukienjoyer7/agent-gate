@@ -2,6 +2,28 @@ from app.core.schemas import ActionRequest, ExecutionResult, ExecutionStatus, ne
 
 
 class BrowserExecutor:
+    """
+    Single-step browser action executor.
+
+    .. note::
+
+       For **real** Playwright execution (open page, snapshot DOM,
+       resolve selectors, click／type), use the multi-step plan endpoint:
+
+       ``POST /api/v1/chat/plan``   – plan only
+       ``POST /api/v1/chat/execute`` – plan + execute through
+       :func:`app.domains.agent.services.browser_prototype_agent.run_browser_prototype_agent`
+
+       This executor provides mock responses for development and
+       testing.  Interactive actions (click, type, …) require the
+       multi-step flow because they need:
+
+       - A live Playwright session
+       - A snapshot + selector-map built from the real DOM
+       - Element resolution by label／role against the snapshot
+       - Sequential execution in a single browser context
+    """
+
     async def execute(self, action: ActionRequest) -> ExecutionResult:
         if action.action_type == "BROWSER_OPEN":
             return ExecutionResult(
@@ -38,25 +60,27 @@ class BrowserExecutor:
                 },
             )
 
-        handlers = {
-            "BROWSER_CLICK": "Clicked element",
-            "BROWSER_TYPE": "Typed into element",
-            "BROWSER_SELECT": "Selected option",
-            "BROWSER_SUBMIT": "Submitted form",
-            "BROWSER_SCREENSHOT": "Captured screenshot",
-        }
-        summary = handlers.get(action.action_type)
-        if summary:
+        if action.action_type in (
+            "BROWSER_CLICK",
+            "BROWSER_TYPE",
+            "BROWSER_SELECT",
+            "BROWSER_SUBMIT",
+            "BROWSER_SCREENSHOT",
+            "BROWSER_SCROLL",
+        ):
             return ExecutionResult(
                 run_id=action.run_id,
                 action_id=action.action_id,
                 executor="browser",
-                status=ExecutionStatus.SUCCESS,
-                result_summary=f"{summary} (mock)",
+                status=ExecutionStatus.SKIPPED,
+                result_summary=(
+                    f"Interactive browser action ({action.action_type}) requires a real "
+                    f"Playwright session. Use POST /api/v1/chat/execute with the "
+                    f"multi-step plan endpoint."
+                ),
                 data={
                     "action_type": action.action_type,
-                    "element_id": action.payload.get("element_id"),
-                    "snapshot_id": action.payload.get("snapshot_id"),
+                    "hint": "use POST /api/v1/chat/execute for real browser execution",
                 },
             )
 
