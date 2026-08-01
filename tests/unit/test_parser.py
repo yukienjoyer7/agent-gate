@@ -1,6 +1,10 @@
-"""Tests for the natural language → ActionRequest parser."""
+"""Tests for the rule-based natural language → ActionRequest parser.
 
-from app.llm.services.parser import parse_prompt, parse_prompt_plan
+These cover the legacy rule-based parser that is now ``parse_old.py``;
+the LLM-backed parser is tested separately in ``test_parser_llm.py``.
+"""
+
+from app.llm.services.parse_old import parse_prompt, parse_prompt_plan
 
 
 class TestParsePrompt:

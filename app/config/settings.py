@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     XENDIT_API_KEY: str = ""
     GMAIL_CREDENTIALS_PATH: str = "credentials/gmail_token.json"
 
+    # LLM (OpenRouter)
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "openrouter/free"
+    OPENROUTER_TIMEOUT: float = 60.0
+
     # Filesystem
     LOCAL_FILE_ROOT: str = "demo_data"
     ALLOWED_FILESYSTEM_PATHS: list[str] = ["/tmp/agentgate"]
@@ -96,7 +101,7 @@ def _resolve_settings_class(env: str) -> type[Settings]:
     return Settings
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     """Return the Settings instance for the active environment.
 

@@ -1,573 +1,429 @@
 """
-Natural language prompt parser for browser **and connector** actions.
+LLM-backed natural-language → action plan parser (OpenRouter).
 
-Parses a free-text instruction into structured ActionRequest parameters.
-The AI (currently rule-based) automatically detects the **domain**:
+Replaces the original rule-based parser, which was moved to
+:mod:`app.llm.services.parse_old` (``parse_old.py``). The new parser sends
+the user prompt to **OpenRouter** (model ``openrouter/free`` by default,
+configurable via ``OPENROUTER_MODEL``) and asks the model to return a JSON
+action plan whose steps are compatible with
+:func:`app.core.action_request.build_action_request`.
 
-- **Browser** — ``"Click the login button on playwright.dev"``
-- **Gmail** — ``"Send email to john@example.com saying hello"``
-- **GitHub** — ``"Get repo info for microsoft/vscode"``
-- **Local file** — ``"Read file sample.txt"``
+Behaviour contract
+------------------
+The public functions keep the **same return shapes** as the rule-based
+parser, so callers (``app/api/v1/chat.py``, tests) work unchanged:
 
-To use an actual LLM, replace the internals of ``parse_prompt()`` with a call
-to an LLM provider while keeping the return signature unchanged.
+- ``parse_prompt(prompt)`` → ``{"parsed", "llm_provider", "raw_prompt", "human_readable"}``
+- ``parse_prompt_plan(prompt)`` → ``{"plan", "llm_provider", "raw_prompt", "human_readable"}``
+
+Fallback
+--------
+If ``OPENROUTER_API_KEY`` is not configured, the LLM call fails, or the
+model returns an unparseable/invalid plan, the functions **fall back to the
+rule-based parser** (``parse_old``) so the application keeps working in
+environments without an LLM key.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from typing import Any
 
+import httpx
+
+from app.config.settings import get_settings
 from app.core.browser_schema import BrowserElement
+from app.llm.services.parse_old import _classify_prompt_risk
+from app.llm.services.parse_old import parse_prompt as _rule_parse_prompt
+from app.llm.services.parse_old import parse_prompt_plan as _rule_parse_prompt_plan
 
-# ── Domain detection ────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
 
-DOMAIN_KEYWORDS: list[tuple[str, str, str]] = [
-    # (keyword, domain_name, target_system)
-    # ── domain: booking (Critical) ──
-    ("checkout", "booking", "browser"),
-    ("cart", "booking", "browser"),
-    ("order", "booking", "browser"),
-    ("payment", "booking", "stripe"),
-    ("pay", "booking", "stripe"),
-    ("refund", "booking", "stripe"),
-    ("transaction", "booking", "stripe"),
-    # ── domain: code_protection (High) ──
-    ("github", "code_protection", "github"),
-    ("repository", "code_protection", "github"),
-    ("repo", "code_protection", "github"),
-    ("push", "code_protection", "github"),
-    ("commit", "code_protection", "github"),
-    ("server", "code_protection", "browser"),
-    ("deploy", "code_protection", "browser"),
-    ("shell", "code_protection", "browser"),
-    ("terminal", "code_protection", "browser"),
-    # ── domain: productivity (Medium) ──
-    ("gmail", "productivity", "gmail"),
-    ("email", "productivity", "gmail"),
-    ("inbox", "productivity", "gmail"),
-    ("send email", "productivity", "gmail"),
-    ("archive email", "productivity", "gmail"),
-    ("customer", "productivity", "browser"),
-    ("complaint", "productivity", "browser"),
-    ("hr", "productivity", "browser"),
-    ("employee", "productivity", "browser"),
-    ("salary", "productivity", "browser"),
-    ("legal", "productivity", "browser"),
-    ("contract", "productivity", "browser"),
-    ("compliance", "productivity", "browser"),
-    ("course", "productivity", "browser"),
-    ("learning", "productivity", "browser"),
-    ("tutorial", "productivity", "browser"),
-    # ── domain: filesystem (Low) ──
-    ("health record", "filesystem", "local_file"),
-    ("medical", "filesystem", "local_file"),
-    ("diagnosis", "filesystem", "local_file"),
-    ("local file", "filesystem", "local_file"),
-    ("read file", "filesystem", "local_file"),
-]
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_MODEL = "openrouter/free"
 
-# ── Browser keyword tables ──────────────────────────────────────────
-
-ACTION_KEYWORDS: dict[str, str] = {
+# Aliases free models commonly return instead of the canonical action_type.
+# ``action`` → ``action_type`` mapping mirrors parse_old's ACTION_KEYWORDS.
+ACTION_ALIASES: dict[str, str] = {
+    "navigate": "BROWSER_OPEN",
+    "navigate_to": "BROWSER_OPEN",
+    "go_to": "BROWSER_OPEN",
+    "goto": "BROWSER_OPEN",
+    "open": "BROWSER_OPEN",
+    "visit": "BROWSER_OPEN",
     "click": "BROWSER_CLICK",
     "tap": "BROWSER_CLICK",
     "press": "BROWSER_CLICK",
     "type": "BROWSER_TYPE",
-    "fill in": "BROWSER_TYPE",
     "fill": "BROWSER_TYPE",
-    "enter": "BROWSER_TYPE",
+    "fill_in": "BROWSER_TYPE",
     "input": "BROWSER_TYPE",
-    "navigate to": "BROWSER_OPEN",
-    "go to": "BROWSER_OPEN",
-    "open": "BROWSER_OPEN",
-    "visit": "BROWSER_OPEN",
+    "enter": "BROWSER_TYPE",
+    "scroll": "BROWSER_SCROLL",
     "screenshot": "BROWSER_SCREENSHOT",
     "capture": "BROWSER_SCREENSHOT",
-    "take a screenshot": "BROWSER_SCREENSHOT",
-    "select": "BROWSER_SELECT",
-    "choose": "BROWSER_SELECT",
     "submit": "BROWSER_SUBMIT",
     "send": "BROWSER_SUBMIT",
-    "scroll": "BROWSER_SCROLL",
+    "select": "BROWSER_SELECT",
+    "choose": "BROWSER_SELECT",
+    "api_call": "API_CALL",
+    "read": "FILE_READ",
+    "read_file": "FILE_READ",
 }
 
-ROLE_KEYWORDS: dict[str, str] = {
-    "button": "button",
-    "btn": "button",
-    "link": "link",
-    "search box": "searchbox",
-    "searchbar": "searchbox",
-    "search": "searchbox",
-    "textbox": "textbox",
-    "text box": "textbox",
-    "input field": "textbox",
-    "field": "textbox",
-    "checkbox": "checkbox",
-    "radio button": "radio",
-    "dropdown": "combobox",
-    "menu": "menuitem",
-    "tab": "tab",
-    "dialog": "dialog",
+ALLOWED_ACTION_TYPES = {
+    "BROWSER_OPEN",
+    "BROWSER_CLICK",
+    "BROWSER_TYPE",
+    "BROWSER_SCROLL",
+    "BROWSER_SCREENSHOT",
+    "BROWSER_SUBMIT",
+    "BROWSER_SELECT",
+    "API_CALL",
+    "FILE_READ",
+}
+ALLOWED_TARGET_SYSTEMS = {"browser", "gmail", "github", "local_file", "stripe"}
+ALLOWED_DOMAINS = {"browser", "productivity", "code_protection", "booking", "filesystem"}
+ALLOWED_RISK_HINTS = {
+    "unknown",
+    "external_send",
+    "file_read",
+    "destructive",
+    "unauthorized",
+    "data_exfiltration",
+    "payment",
+    "refund",
+    "bulk_action",
+}
+INTERACTIVE_BROWSER_ACTIONS = {
+    "BROWSER_CLICK",
+    "BROWSER_TYPE",
+    "BROWSER_SCROLL",
+    "BROWSER_SCREENSHOT",
+    "BROWSER_SUBMIT",
+    "BROWSER_SELECT",
 }
 
-STOP_WORDS = frozenset(
+# Domain fallbacks matching parse_old's DOMAIN_KEYWORDS so an LLM that
+# omits ``domain`` cannot silently downgrade guardrail risk decisions.
+DOMAIN_BY_TARGET_SYSTEM = {
+    "gmail": "productivity",
+    "github": "code_protection",
+    "local_file": "filesystem",
+    "stripe": "booking",
+    "browser": "browser",
+}
+
+SYSTEM_PROMPT = """You are AgentGate's action planner. Convert the user's natural-language \
+instruction into a JSON action plan.
+
+Return ONLY valid JSON (no markdown fences, no commentary) with this exact shape:
+{
+  "plan": [
     {
-        "the", "a", "an", "on", "in", "at", "into", "to", "for",
-        "of", "with", "and", "or", "please", "can", "you", "i",
-        "would", "like", "need", "want", "could",
+      "source": "chat",
+      "domain": "<domain>",
+      "action_type": "<ACTION_TYPE>",
+      "target_system": "<TARGET_SYSTEM>",
+      "target": "<url or identifier>",
+      "risk_hint": "<risk_hint>",
+      "payload": { ... }
     }
-)
+  ],
+  "summary": "<one-line human readable summary>"
+}
 
-# ── Risk keyword detection ──────────────────────────────────────────
-# These keywords in a prompt override the default risk_hint.
-# Ordered from longest phrase to shortest for greedy matching.
-
-RISK_KEYWORDS: list[tuple[str, str]] = [
-    # → BLOCK (destructive)
-    ("delete", "destructive"),
-    ("remove", "destructive"),
-    ("destroy", "destructive"),
-    ("erase", "destructive"),
-    ("wipe", "destructive"),
-    ("purge", "destructive"),
-    ("drop", "destructive"),
-    ("kill", "destructive"),
-    ("terminate", "destructive"),
-    ("shutdown", "destructive"),
-    # → BLOCK (unauthorized access)
-    ("unauthorized", "unauthorized"),
-    ("bypass", "unauthorized"),
-    ("hack", "unauthorized"),
-    # → BLOCK (data exfiltration)
-    ("exfiltrate", "data_exfiltration"),
-    ("steal", "data_exfiltration"),
-    ("leak", "data_exfiltration"),
-]
+Rules:
+- action_type must be one of: BROWSER_OPEN, BROWSER_CLICK, BROWSER_TYPE, BROWSER_SCROLL, BROWSER_SCREENSHOT, BROWSER_SUBMIT, BROWSER_SELECT, API_CALL, FILE_READ.
+- For browser interactions that navigate to a page, ALWAYS emit a first step BROWSER_OPEN with payload {"url": "..."} followed by the actual action step.
+- target_system must be one of: browser, gmail, github, local_file, stripe.
+- domain must be one of: browser, productivity, code_protection, booking, filesystem.
+- risk_hint must be one of: unknown, external_send, file_read, destructive, unauthorized, data_exfiltration, payment, refund, bulk_action.
+- payload for browser click/type: {"url": "...", "action_type": "...", "element_id": "<slug>", "label": "<human label>", "role": "<aria role>", "value": "<text to type if any>"}
+- payload for gmail: {"action": "send"|"read"|"archive", "to": "...", "body": "...", "query": "..."}
+- payload for github: {"action": "repo_metadata", "owner": "...", "repo": "..."}
+- payload for local_file: {"action": "read", "path": "..."}
+- target: full URL for browser, recipient address for gmail, owner/repo for github, file path for local_file.
+- Always prepend https:// to bare domains.
+- Keep the plan as short as the instruction requires (single API_CALL/FILE_READ step for connectors)."""
 
 
-def parse_prompt(prompt: str) -> dict[str, Any]:
+# ── Public API (async, LLM-backed with rule-based fallback) ─────────
+
+
+async def parse_prompt(prompt: str) -> dict[str, Any]:
     """
-    Parse a natural-language instruction into ActionRequest fields.
+    Parse a natural-language instruction into ActionRequest fields via OpenRouter.
 
-    Automatically detects the domain (browser / Gmail / GitHub / file)
-    and extracts the relevant fields.
+    Falls back to the rule-based parser (``parse_old``) on any failure.
     """
-    prompt_lower = prompt.lower().strip()
-    target_system, domain_name = _detect_domain_info(prompt_lower)
-
-    if target_system == "gmail":
-        return _parse_gmail(prompt, prompt_lower)
-    if target_system == "github":
-        return _parse_github(prompt, prompt_lower)
-    if target_system == "local_file":
-        return _parse_local_file(prompt, prompt_lower)
-
-    return _parse_browser(prompt, prompt_lower, domain_name)
-
-
-def parse_prompt_plan(prompt: str) -> dict[str, Any]:
-    """
-    Parse a natural-language prompt into a **multi-step plan**.
-
-    For **browser** actions, expands a single instruction into the
-    sequence of steps needed (e.g. ``BROWSER_OPEN`` then ``BROWSER_CLICK``).
-
-    For **connector** actions (Gmail, GitHub, file), returns a single-step
-    plan since API calls don't need page navigation.
-    """
-    single = parse_prompt(prompt)
-    parsed = single["parsed"]
-    target_system = parsed.get("target_system", "browser")
-
-    # Connector actions are always single-step
-    if target_system != "browser":
+    try:
+        steps = (await _llm_plan(prompt))["plan"]
+        parsed = _primary_step(steps)
         return {
-            "plan": [parsed],
-            "llm_provider": single["llm_provider"],
+            "parsed": parsed,
+            "llm_provider": _provider_name(),
             "raw_prompt": prompt,
-            "human_readable": "\n" + single["human_readable"],
+            "human_readable": _describe_steps(steps),
         }
+    except Exception as exc:  # noqa: BLE001 - intentional fallback to rule-based parser
+        logger.warning("OpenRouter parsing failed (%s); using rule-based parser", exc)
+        return _rule_parse_prompt(prompt)
 
-    # Browser actions: may expand to BROWSER_OPEN + action
-    url = parsed.get("target") or parsed["payload"].get("url", "")
-    action_type = parsed["action_type"]
-    interactive_actions = {
-        "BROWSER_CLICK", "BROWSER_TYPE", "BROWSER_SUBMIT",
-        "BROWSER_SELECT", "BROWSER_SCROLL", "BROWSER_SCREENSHOT",
+
+async def parse_prompt_plan(prompt: str) -> dict[str, Any]:
+    """
+    Parse a natural-language instruction into a **multi-step plan** via OpenRouter.
+
+    Falls back to the rule-based parser (``parse_old``) on any failure.
+    """
+    try:
+        steps = (await _llm_plan(prompt))["plan"]
+        return {
+            "plan": steps,
+            "llm_provider": _provider_name(),
+            "raw_prompt": prompt,
+            "human_readable": _describe_steps(steps),
+        }
+    except Exception as exc:  # noqa: BLE001 - intentional fallback to rule-based parser
+        logger.warning("OpenRouter planning failed (%s); using rule-based parser", exc)
+        return _rule_parse_prompt_plan(prompt)
+
+
+# ── OpenRouter call ──────────────────────────────────────────────────
+
+
+def _provider_name() -> str:
+    """Return the configured OpenRouter model id (for ``llm_provider``)."""
+    return get_settings().OPENROUTER_MODEL or DEFAULT_MODEL
+
+
+async def _llm_plan(prompt: str) -> dict[str, Any]:
+    """Call OpenRouter chat completions and return a normalized plan dict."""
+    settings = get_settings()
+    api_key = settings.OPENROUTER_API_KEY
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not configured")
+
+    model = settings.OPENROUTER_MODEL or DEFAULT_MODEL
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        # Ask for JSON + let OpenRouter's free router pick a model that
+        # supports JSON mode, and heal malformed JSON via the plugin.
+        "response_format": {"type": "json_object"},
+        "plugins": [{"id": "response-healing"}],
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://freebuff.com",
+        "X-Title": "AgentGate",
     }
 
-    detected_domain = single.get("parsed", {}).get("domain", "browser")
-    steps: list[dict[str, Any]] = []
-    if url and action_type in interactive_actions:
-        steps.append({
-            "source": "chat",
-            "domain": detected_domain,
-            "action_type": "BROWSER_OPEN",
-            "target_system": "browser",
-            "target": url,
-            "risk_hint": "unknown",
-            "payload": {"url": url},
-        })
-    steps.append(parsed)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(settings.OPENROUTER_TIMEOUT)) as client:
+        response = await client.post(OPENROUTER_URL, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
 
-    lines: list[str] = []
-    for i, s in enumerate(steps, 1):
-        tgt = _step_target(s)
-        lbl, role, val = _step_details(s)
-        lines.append(f"  {i}. {_describe(s['action_type'], tgt, lbl, role, val)}")
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError(f"unexpected OpenRouter response shape: {exc}") from exc
 
-    return {
-        "plan": steps,
-        "llm_provider": single["llm_provider"],
-        "raw_prompt": prompt,
-        "human_readable": "\n" + "\n".join(lines),
-    }
+    try:
+        raw = _extract_json(content)
+    except json.JSONDecodeError as exc:
+        # Keep visibility of what the model actually returned when it is
+        # not valid JSON (the INFO log below is only emitted on success).
+        logger.warning(
+            "OpenRouter returned non-JSON content",
+            extra={"llm_model": model, "llm_raw": content[:2000]},
+        )
+        raise ValueError(f"LLM returned non-JSON content: {exc}") from exc
 
+    steps = [_normalize_step(step) for step in raw.get("plan", []) if isinstance(step, dict)]
+    steps = [step for step in steps if step is not None]
+    # Prepended BROWSER_OPEN first, then apply prompt risk to ALL final steps
+    # so the navigation step also carries a BLOCK hint for destructive prompts.
+    steps = _ensure_open_step(steps)
+    steps = _apply_prompt_risk(steps, prompt)
 
-# ── Domain detection ────────────────────────────────────────────────
+    if not steps:
+        raise ValueError("LLM returned an empty plan")
 
+    # INFO level so the LLM output is visible in `docker compose up` logs.
+    # Single structured log line: raw model response + the normalized plan
+    # (extra=... makes python-json-logger emit nested JSON, not escaped text).
+    logger.info(
+        "OpenRouter LLM response",
+        extra={"llm_model": model, "llm_response": raw, "plan": steps},
+    )
 
-def _detect_domain_info(prompt_lower: str) -> tuple[str, str]:
-    """
-    Detect both ``target_system`` and ``domain_name`` from prompt keywords.
-
-    Returns ``(target_system, domain_name)``, defaulting to ``("browser", "browser")``.
-    """
-    for keyword, domain_name, target_sys in DOMAIN_KEYWORDS:
-        if keyword in prompt_lower:
-            return target_sys, domain_name
-    return "browser", "browser"
-
-
-def _detect_domain(prompt_lower: str) -> str:
-    """Detect target system from prompt keywords. Returns ``'browser'`` if unknown."""
-    target_sys, _domain = _detect_domain_info(prompt_lower)
-    return target_sys
+    return {"plan": steps, "summary": raw.get("summary", "")}
 
 
-# ── Browser parser (existing logic) ─────────────────────────────────
+def _extract_json(content: str) -> dict[str, Any]:
+    """Extract the first JSON object from model output (handles markdown fences)."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        text = text[start : end + 1]
+    return json.loads(text)
 
 
-def _parse_browser(prompt: str, prompt_lower: str, domain_name: str = "browser") -> dict[str, Any]:
-    url = _extract_url(prompt)
-    action_type = _extract_action(prompt_lower)
-    element_label, element_role = _extract_element_info(prompt, prompt_lower)
-    input_value = _extract_input_value(prompt)
+# ── Normalization & helpers ─────────────────────────────────────────
 
-    # Prompt-level risk overrides domain-level classification
-    prompt_risk = _classify_prompt_risk(prompt_lower)
-    risk_hint = prompt_risk or _classify_risk(action_type, element_label)
 
-    payload: dict[str, Any] = {"url": url or ""}
-    if action_type in ("BROWSER_TYPE", "BROWSER_SELECT", "BROWSER_SUBMIT"):
-        payload["action_type"] = action_type
-        if element_label:
-            payload["element_id"] = element_label.lower().replace(" ", "_")
-            payload["label"] = element_label
-        if element_role:
-            payload["role"] = element_role
-        if input_value:
-            payload["value"] = input_value
-    elif action_type in ("BROWSER_CLICK",):
-        payload["action_type"] = action_type
-        if element_label:
-            payload["element_id"] = element_label.lower().replace(" ", "_")
-            payload["label"] = element_label
-        if element_role:
-            payload["role"] = element_role
+def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
+    """Coerce an LLM step into the canonical step schema (or None if unusable)."""
+    action_type = str(step.get("action_type") or "").upper()
+    if action_type not in ALLOWED_ACTION_TYPES:
+        # Free models sometimes use ``action``/lowercase aliases instead of
+        # the canonical action_type. Map them before rejecting the step.
+        action_type = ACTION_ALIASES.get(str(step.get("action") or "").lower()) or ACTION_ALIASES.get(
+            action_type.lower()
+        )
+    target_system = str(step.get("target_system") or "browser").lower()
 
-    action_request: dict[str, Any] = {
+    if action_type not in ALLOWED_ACTION_TYPES:
+        return None
+
+    payload = step.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+
+    # Derive the domain from target_system when the LLM omits it, mirroring
+    # parse_old's DOMAIN_KEYWORDS so guardrail risk levels stay correct.
+    domain = str(step.get("domain") or DOMAIN_BY_TARGET_SYSTEM.get(target_system, "browser")).lower()
+
+    risk_hint = str(step.get("risk_hint") or "").lower()
+    if risk_hint not in ALLOWED_RISK_HINTS:
+        risk_hint = _derive_risk_hint(action_type, target_system, payload)
+
+    target = (
+        step.get("target")
+        or step.get("url")  # models often return {action: navigate, url: ...}
+        or payload.get("url")
+        or payload.get("path")
+        or ""
+    )
+    if (
+        isinstance(target, str)
+        and target_system == "browser"
+        and target
+        and not re.match(r"^https?://", target)
+    ):
+        target = f"https://{target}"
+        if payload.get("url"):
+            payload["url"] = target
+
+    normalized: dict[str, Any] = {
         "source": "chat",
-        "domain": domain_name,
+        "domain": domain if domain in ALLOWED_DOMAINS else "browser",
         "action_type": action_type,
-        "target_system": "browser",
-        "target": url or "",
+        "target_system": target_system if target_system in ALLOWED_TARGET_SYSTEMS else "browser",
+        "target": target,
         "risk_hint": risk_hint,
         "payload": payload,
     }
 
-    if element_label:
+    # Mirror the rule-based parser: attach a BrowserElement when we have a label.
+    label = payload.get("label")
+    if action_type in INTERACTIVE_BROWSER_ACTIONS and label:
         try:
-            be = BrowserElement(
-                snapshot_id="", element_id="",
-                role=element_role or "", label=element_label,
+            element = BrowserElement(
+                snapshot_id="",
+                element_id="",
+                role=str(payload.get("role") or ""),
+                label=str(label),
                 risk_hint=risk_hint,
             )
-            action_request["browser_element"] = be.model_dump(mode="json")
-        except Exception:
-            pass
+            normalized["browser_element"] = element.model_dump(mode="json")
+        except Exception as exc:  # noqa: BLE001 - best-effort metadata enrichment
+            logger.debug("could not attach browser_element: %s", exc)
 
-    return {
-        "parsed": action_request,
-        "llm_provider": "dummy",
-        "raw_prompt": prompt,
-        "human_readable": _describe(action_type, url, element_label, element_role, input_value),
-    }
+    return normalized
 
 
-# ── Connector parsers ───────────────────────────────────────────────
-
-
-def _parse_gmail(prompt: str, prompt_lower: str) -> dict[str, Any]:
-    """Parse Gmail-related prompts into ActionRequest fields."""
-    action = "read"
-    recipient = ""
-    body = ""
-    query = ""
-
-    if any(kw in prompt_lower for kw in ("send", "send email", "send to")):
-        action = "send"
-        # Extract quoted body
-        body = _extract_input_value(prompt) or ""
-        # Extract recipient after "to" or "send to"
-        to_match = re.search(r"(?:to|send to)\s+([^\s,;]+)", prompt_lower)
-        if to_match:
-            recipient = to_match.group(1)
-    elif any(kw in prompt_lower for kw in ("archive", "archive email")):
-        action = "archive"
-        # Extract search query after "about" or "regarding"
-        q_match = re.search(r"(?:about|regarding)\s+(.+)", prompt_lower)
-        if q_match:
-            query = q_match.group(1).strip()
-
-    target = recipient or "inbox"
-    payload: dict[str, Any] = {
-        "action": action,
-        "query": query or "",
-    }
-    if recipient:
-        payload["to"] = recipient
-    if body:
-        payload["body"] = body
-
-    action_request: dict[str, Any] = {
-        "source": "chat",
-        "domain": "productivity",
-        "action_type": "API_CALL",
-        "target_system": "gmail",
-        "target": target,
-        "risk_hint": _classify_prompt_risk(prompt_lower) or ("external_send" if action == "send" else "unknown"),
-        "payload": payload,
-    }
-
-    human = f"Gmail → {action}" + (f" → \"{body}\"" if body else "") + (f" → to {recipient}" if recipient else "")
-    if query:
-        human += f" → about \"{query}\""
-
-    return {
-        "parsed": action_request,
-        "llm_provider": "dummy",
-        "raw_prompt": prompt,
-        "human_readable": human,
-    }
-
-
-def _parse_github(prompt: str, prompt_lower: str) -> dict[str, Any]:
-    """Parse GitHub-related prompts into ActionRequest fields."""
-    owner = ""
-    repo = ""
-
-    # Extract owner/repo from "for owner/repo" or "of owner/repo"
-    repo_match = re.search(r"(?:for|of)\s+([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)", prompt_lower)
-    if repo_match:
-        parts = repo_match.group(1).split("/", 1)
-        owner, repo = parts[0], parts[1]
-
-    payload: dict[str, Any] = {
-        "action": "repo_metadata",
-        "owner": owner,
-        "repo": repo,
-    }
-    target = f"{owner}/{repo}" if owner and repo else ""
-
-    action_request: dict[str, Any] = {
-        "source": "chat",
-        "domain": "code_protection",
-        "action_type": "API_CALL",
-        "target_system": "github",
-        "target": target,
-        "risk_hint": _classify_prompt_risk(prompt_lower) or "unknown",
-        "payload": payload,
-    }
-
-    human = f"GitHub → repo_metadata" + (f" → {target}" if target else "")
-
-    return {
-        "parsed": action_request,
-        "llm_provider": "dummy",
-        "raw_prompt": prompt,
-        "human_readable": human,
-    }
-
-
-def _parse_local_file(prompt: str, prompt_lower: str) -> dict[str, Any]:
-    """Parse local-file-related prompts into ActionRequest fields."""
-    path = ""
-
-    # Extract filename — try "read file <path>" first, then "file <path>", then "read <path>"
-    for file_pattern in [
-        r"read\s+file\s+([a-zA-Z0-9_.\-/\\]+(?:\.[a-zA-Z0-9]+)?)",
-        r"file\s+([a-zA-Z0-9_.\-/\\]+(?:\.[a-zA-Z0-9]+)?)",
-        r"read\s+([a-zA-Z0-9_.\-/\\]+(?:\.[a-zA-Z0-9]+)?)",
-    ]:
-        file_match = re.search(file_pattern, prompt_lower)
-        if file_match:
-            path = file_match.group(1)
-            break
-
-    payload: dict[str, Any] = {
-        "action": "read",
-        "path": path,
-    }
-
-    action_request: dict[str, Any] = {
-        "source": "chat",
-        "domain": "filesystem",
-        "action_type": "FILE_READ",
-        "target_system": "local_file",
-        "target": path,
-        "risk_hint": _classify_prompt_risk(prompt_lower) or "file_read",
-        "payload": payload,
-    }
-
-    human = f"File → read" + (f" → {path}" if path else "")
-
-    return {
-        "parsed": action_request,
-        "llm_provider": "dummy",
-        "raw_prompt": prompt,
-        "human_readable": human,
-    }
-
-
-# ── Shared helpers ──────────────────────────────────────────────────
-
-
-def _extract_url(prompt: str) -> str | None:
-    """Return a full ``https://...`` URL or ``None``."""
-    m = re.search(r"https?://[^\s)\"]+", prompt)
-    if m:
-        url = m.group(0)
-        url = re.sub(r"[!?.,;:]+$", "", url)
-        return url
-
-    url_prefixes: list[tuple[str, str]] = [
-        (r"\bon\b", "on"), (r"\bat\b", "at"), (r"\bto\b", "to"),
-        (r"\bopen\b", "open"), (r"\bvisit\b", "visit"),
-        (r"\bnavigate\s+to\b", "navigate to"), (r"\bgo\s+to\b", "go to"),
-    ]
-    prompt_lower = prompt.lower()
-
-    for word_pattern, _label in url_prefixes:
-        match = re.search(word_pattern, prompt_lower)
-        if not match:
-            continue
-        after = prompt[match.end():].strip()
-        if not after:
-            continue
-        domain_match = re.match(
-            r"((?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?::\d+)?(?:/[^\s)\"]*)?)",
-            after,
-        )
-        if domain_match:
-            domain = domain_match.group(1)
-            domain = re.sub(r"[!?.,;:]+$", "", domain)
-            if not domain.startswith(("http://", "https://")):
-                domain = f"https://{domain}"
-            return domain
-    return None
-
-
-def _extract_action(prompt_lower: str) -> str:
-    for phrase in sorted(ACTION_KEYWORDS, key=len, reverse=True):
-        if phrase in prompt_lower:
-            return ACTION_KEYWORDS[phrase]
-    return "BROWSER_OPEN"
-
-
-def _extract_element_info(prompt: str, prompt_lower: str) -> tuple[str | None, str | None]:
-    label: str | None = None
-    role: str | None = None
-
-    for keyword, mapped_role in sorted(ROLE_KEYWORDS.items(), key=len, reverse=True):
-        if keyword in prompt_lower:
-            role = mapped_role
-            idx = prompt_lower.find(keyword)
-            before = prompt[:idx].strip()
-            for w in sorted(ACTION_KEYWORDS, key=len, reverse=True):
-                before = re.sub(rf"\b{re.escape(w)}\b", "", before, flags=re.IGNORECASE)
-            tokens = [t for t in before.split() if t.lower() not in STOP_WORDS]
-            if tokens:
-                label = " ".join(tokens).title()
-            break
-
-    if not label:
-        cleaned = prompt_lower
-        for action_word in sorted(ACTION_KEYWORDS, key=len, reverse=True):
-            cleaned = re.sub(rf"\b{re.escape(action_word)}\b", "", cleaned).strip()
-        tokens = [
-            t for t in cleaned.split()
-            if t not in STOP_WORDS
-               and not t.startswith(("http", "www"))
-               and not t.startswith(".")
-        ]
-        meaningful = [t for t in tokens if re.match(r"^[a-zA-Z]{2,}", t)]
-        if meaningful:
-            label = " ".join(meaningful[:3]).title()
-    return label, role
-
-
-def _extract_input_value(prompt: str) -> str | None:
-    m = re.search(r"""['"]([^'"]+)['"]""", prompt)
-    return m.group(1) if m else None
-
-
-def _classify_prompt_risk(prompt_lower: str) -> str:
-    """
-    Check the prompt for high-risk keywords (destructive, unauthorized,
-    data exfiltration). Returns the matched ``risk_hint`` or ``None``.
-
-    This is checked **before** domain-specific risk classification, so
-    destructive actions are always caught regardless of domain.
-    """
-    for keyword, risk_hint in RISK_KEYWORDS:
-        if keyword in prompt_lower:
-            return risk_hint
-    return None
-
-
-def _classify_risk(action_type: str, element_label: str | None) -> str:
-    if action_type in ("BROWSER_SUBMIT", "BROWSER_SELECT"):
-        return "external_send" if element_label else "unknown"
+def _derive_risk_hint(action_type: str, target_system: str, payload: dict[str, Any]) -> str:
+    """Best-effort risk hint derivation matching parse_old defaults."""
+    if action_type == "FILE_READ" or target_system == "local_file":
+        return "file_read"
+    if target_system == "gmail" and payload.get("action") == "send":
+        return "external_send"
+    # parse_old guaranteed NEED_APPROVAL (external_send) for form submits.
+    if action_type in ("BROWSER_SUBMIT", "BROWSER_SELECT") and payload.get("label"):
+        return "external_send"
     return "unknown"
 
 
-def _describe(action_type: str, url: str | None, label: str | None,
-              role: str | None, value: str | None) -> str:
-    parts = [action_type.replace("BROWSER_", "").title()]
-    if role or label:
-        desc = " ".join(filter(None, [role, f'"{label}"' if label else ""]))
-        parts.append(desc)
-    if value:
-        parts.append(f"value={value!r}")
-    if url:
-        parts.append(f"on {url}")
-    return " → ".join(parts)
+def _ensure_open_step(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prepend a BROWSER_OPEN step if a browser action has a URL but no OPEN step."""
+    if not steps or steps[0].get("action_type") == "BROWSER_OPEN":
+        return steps
+
+    first = steps[0]
+    if first.get("target_system") == "browser" and first.get("target"):
+        url = first["target"]
+        return [
+            {
+                "source": "chat",
+                "domain": first.get("domain", "browser"),
+                "action_type": "BROWSER_OPEN",
+                "target_system": "browser",
+                "target": url,
+                # inherit the action step's risk so destructive prompts stay
+                # consistent even if pipeline ordering changes later
+                "risk_hint": first.get("risk_hint", "unknown"),
+                "payload": {"url": url},
+            },
+            *steps,
+        ]
+    return steps
 
 
-def _step_target(step: dict[str, Any]) -> str | None:
-    t = step.get("target") or ""
-    if t:
-        return t
-    p = step.get("payload")
-    if isinstance(p, dict):
-        return p.get("url") or p.get("path") or ""
-    return ""
+def _apply_prompt_risk(steps: list[dict[str, Any]], prompt: str) -> list[dict[str, Any]]:
+    """
+    Deterministic safety net: re-run parse_old's prompt-level risk keyword
+    detection on the raw prompt and override ``risk_hint`` on every step.
+
+    Mirrors parse_old's guarantee that destructive/unauthorized/data_exfiltration
+    keywords always set a BLOCK hint, regardless of what the LLM emitted.
+    """
+    prompt_risk = _classify_prompt_risk(prompt.lower().strip())
+    if not prompt_risk:
+        return steps
+    for step in steps:
+        step["risk_hint"] = prompt_risk
+    return steps
 
 
-def _step_details(step: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
-    p = step.get("payload")
-    if not isinstance(p, dict):
-        return None, None, None
-    return p.get("label"), p.get("role"), p.get("value")
+def _primary_step(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the last non-BROWSER_OPEN step (the actual action)."""
+    for step in reversed(steps):
+        if step.get("action_type") != "BROWSER_OPEN":
+            return step
+    return steps[-1] if steps else {}
+
+
+def _describe_steps(steps: list[dict[str, Any]]) -> str:
+    """Build a human-readable numbered description of the plan steps."""
+    lines: list[str] = []
+    for index, step in enumerate(steps, 1):
+        target = step.get("target") or ""
+        label = (step.get("payload") or {}).get("label") or ""
+        action = step.get("action_type", "").replace("BROWSER_", "").title()
+        description = action + (f' "{label}"' if label else "") + (f" on {target}" if target else "")
+        lines.append(f"  {index}. {description}")
+    return "\n" + "\n".join(lines)

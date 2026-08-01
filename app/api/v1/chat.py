@@ -67,7 +67,7 @@ async def parse_browser_action(request: ParseRequest) -> ParseResponse:
 
     To **execute**, send the same prompt to ``POST /api/v1/chat/execute``.
     """
-    result = parse_prompt_plan(request.prompt)
+    result = await parse_prompt_plan(request.prompt)
     plan = result["plan"]
     first = plan[0] if plan else {}
     payload = first.get("payload", {})
@@ -95,7 +95,7 @@ async def execute_browser_plan(request: ParseRequest) -> dict[str, Any]:
 
     Returns the full ``AuditEvent``.
     """
-    plan_result = parse_prompt_plan(request.prompt)
+    plan_result = await parse_prompt_plan(request.prompt)
     steps = plan_result["plan"]
 
     if not steps:
