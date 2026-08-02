@@ -30,10 +30,20 @@ class Settings(BaseSettings):
     DATABASE_MAX_OVERFLOW: int = Field(default=20, ge=0)
 
     # Connector Credentials
+    # Static tokens are a fallback used only when no OAuth token has been
+    # stored yet for that provider (see app/domains/oauth/service.py).
     GITHUB_TOKEN: str = ""
     GMAIL_ACCESS_TOKEN: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
     XENDIT_API_KEY: str = ""
+
+    # OAuth apps (GitHub OAuth App / Google Cloud OAuth client)
+    GITHUB_OAUTH_CLIENT_ID: str = ""
+    GITHUB_OAUTH_CLIENT_SECRET: str = ""
+    GITHUB_OAUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/oauth/github/callback"
+    GOOGLE_OAUTH_CLIENT_ID: str = ""
+    GOOGLE_OAUTH_CLIENT_SECRET: str = ""
+    GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/oauth/gmail/callback"
 
     # LLM (OpenRouter)
     OPENROUTER_API_KEY: str = ""

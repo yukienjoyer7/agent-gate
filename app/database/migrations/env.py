@@ -19,7 +19,7 @@ if sys.platform == "win32":
 
 # Import models so their tables register on Base.metadata for autogenerate.
 # This keeps the ORM model definitions and Alembic metadata aligned.
-from app.database.models import AuditLog  # noqa: F401
+from app.database.models import AuditLog, OAuthToken  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

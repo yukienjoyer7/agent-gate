@@ -1,9 +1,9 @@
 import httpx
 
-from app.config.settings import get_settings
 from app.core.errors import ConnectorError, ConnectorErrorCode
 from app.core.schemas import ExecutionResult, ExecutionStatus
 from app.domains.connector.base import BaseConnector
+from app.domains.oauth.service import get_access_token
 
 
 class GmailConnector(BaseConnector):
@@ -68,8 +68,9 @@ class GmailConnector(BaseConnector):
             return response.json()
 
         headers = {}
-        if get_settings().GMAIL_ACCESS_TOKEN:
-            headers["Authorization"] = f"Bearer {get_settings().GMAIL_ACCESS_TOKEN}"
+        token = await get_access_token("gmail")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
         async with httpx.AsyncClient(
             base_url="https://gmail.googleapis.com/gmail/v1",

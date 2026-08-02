@@ -1,9 +1,9 @@
 import httpx
 
-from app.config.settings import get_settings
 from app.core.errors import ConnectorError, ConnectorErrorCode
 from app.core.schemas import ExecutionResult, ExecutionStatus
 from app.domains.connector.base import BaseConnector
+from app.domains.oauth.service import get_access_token
 
 
 class GitHubConnector(BaseConnector):
@@ -80,8 +80,9 @@ class GitHubConnector(BaseConnector):
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        if get_settings().GITHUB_TOKEN:
-            headers["Authorization"] = f"Bearer {get_settings().GITHUB_TOKEN}"
+        token = await get_access_token("github")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
         async with httpx.AsyncClient(
             base_url="https://api.github.com",
