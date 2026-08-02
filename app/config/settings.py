@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "openrouter/free"
     OPENROUTER_TIMEOUT: float = 60.0
+    # Function calling: let the planner inspect a page's accessibility tree
+    # (get_accessibility_tree) before emitting element interaction steps.
+    LLM_TOOLS_ENABLED: bool = True
+    # Free models often explore several URLs (open page, docs, subpages) via
+    # tool calls before answering; keep the cap generous but bounded.
+    LLM_MAX_TOOL_ITERATIONS: int = Field(default=5, ge=1, le=10)
 
     # Filesystem
     LOCAL_FILE_ROOT: str = "demo_data"
@@ -48,6 +54,10 @@ class Settings(BaseSettings):
     PLAYWRIGHT_HEADLESS: bool = True
     PLAYWRIGHT_MAX_ELEMENTS: int = Field(default=50, ge=10, le=200)
     BROWSER_MAX_CONCURRENT_SESSIONS: int = Field(default=10, ge=1, le=100)
+    # SPA pages (e.g. YouTube) render interactive headers slightly after
+    # domcontentloaded; both the planner tool (get_accessibility_tree) and the
+    # executor settle this long so the snapshots they see stay consistent.
+    BROWSER_SETTLE_MS: int = Field(default=2000, ge=0, le=10000)
 
     # Data & Storage
     # AUDIT_BACKEND: "postgres" (default -- action-sourced, writes to

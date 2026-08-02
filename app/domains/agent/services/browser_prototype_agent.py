@@ -23,7 +23,7 @@ from app.domains.browser.snapshot.snapshotBuilder import (
 )
 from app.domains.guardrail.decision import decide
 
-SUPPORTED_BROWSER_ACTIONS = {"click", "fill", "scroll", "screenshot"}
+SUPPORTED_BROWSER_ACTIONS = {"click", "fill", "submit", "scroll", "screenshot"}
 
 
 @dataclass
@@ -251,9 +251,20 @@ def _prepare_action(
     if action_type == "scroll" and not (prepared.get("element_id") or prepared.get("label")):
         return prepared
 
-    prepared["element_id"] = str(
-        prepared.get("element_id") or _find_element_id(prepared, page_model)
-    )
+    # Prefer the LLM-provided element_id only when it is a real selector_map
+    # key AND still matches the requested label (page state can shift between
+    # the tool call and execution, so an index that coincidentally exists may
+    # now point at a different element). Otherwise fall back to resolving the
+    # element against the live snapshot (label/role/DOM attrs).
+    provided_id = prepared.get("element_id")
+    if (
+        provided_id
+        and str(provided_id) in page_model.selector_map
+        and _key_matches_action(str(provided_id), prepared, page_model)
+    ):
+        prepared["element_id"] = str(provided_id)
+    else:
+        prepared["element_id"] = str(_find_element_id(prepared, page_model))
 
     if prepared["element_id"] not in page_model.selector_map:
         raise ValueError(f"element_id not found in selector_map: {prepared['element_id']}")
@@ -264,34 +275,143 @@ def _prepare_action(
     return prepared
 
 
+def _key_matches_action(
+    element_id: str,
+    action: dict[str, Any],
+    page_model: BrowserPageModel,
+) -> bool:
+    """True when the selector_map key still matches the action's requested label.
+
+    Guards against trusting a coincidentally-valid element_id (index from the
+    tool output) that page-state drift has re-pointed at a different element.
+    """
+    label = action.get("label") or action.get("element_label") or action.get("text")
+    if not label:
+        return True  # nothing to cross-check
+    for element in page_model.snapshot:
+        if element["element_id"] == element_id:
+            element_label = element.get("label") or ""
+            return (
+                str(label).casefold() == element_label.casefold()
+                or str(label).casefold() in element_label.casefold()
+            )
+    return True  # not in snapshot; trust the map key
+
+
 def _find_element_id(action: dict[str, Any], page_model: BrowserPageModel) -> str:
+    """Resolve the target element_id against the live snapshot.
+
+    Tries, in order:
+    1. exact label (+ optional role),
+    2. partial label (+ optional role),
+    3. DOM attribute match on the LLM-provided element_id / label
+       (name, id, placeholder, aria-label, data-testid, title) — covers the
+       common case where the model emits the real DOM ``name`` (e.g.
+       ``search_query``) instead of the ARIA label.
+    """
     label = action.get("label") or action.get("element_label") or action.get("text")
     role = action.get("role")
+    requested_id = str(action.get("element_id") or "")
+    action_type = action.get("type") or ""
 
-    if not label:
+    if not label and not requested_id:
         raise ValueError("browser action requires element_id or label")
 
-    exact_matches = [
+    candidates = [
         element
         for element in page_model.snapshot
         if element["element_id"] in page_model.selector_map
-        and element["label"].casefold() == str(label).casefold()
-        and (role is None or element["role"] == role)
     ]
-    if len(exact_matches) == 1:
-        return exact_matches[0]["element_id"]
 
-    partial_matches = [
-        element
-        for element in page_model.snapshot
-        if element["element_id"] in page_model.selector_map
-        and str(label).casefold() in element["label"].casefold()
-        and (role is None or element["role"] == role)
-    ]
-    if len(partial_matches) == 1:
-        return partial_matches[0]["element_id"]
+    def role_ok(element: dict[str, Any]) -> bool:
+        return role is None or element["role"] == role
 
-    raise ValueError(f"unable to resolve a unique browser element for label: {label}")
+    # Fill/submit must land on an element we can type into. Free models often
+    # guess a generic role (e.g. "button") for text inputs, so prefer a unique
+    # editable-role element with the exact label first — otherwise the
+    # guessed-role partial match below can resolve to an unrelated control
+    # (e.g. YouTube's voice-search button "Search with your voice") and the
+    # executor then fails with "Element is still occluded".
+    editable_roles = {"combobox", "searchbox", "textbox"}
+    prefer_editable = action_type in ("fill", "submit")
+
+    if label:
+        if prefer_editable:
+            editable_exact = [
+                element
+                for element in candidates
+                if element["role"] in editable_roles
+                and element["label"].casefold() == str(label).casefold()
+            ]
+            if len(editable_exact) == 1:
+                return editable_exact[0]["element_id"]
+
+        exact_matches = [
+            element
+            for element in candidates
+            if role_ok(element) and element["label"].casefold() == str(label).casefold()
+        ]
+        if len(exact_matches) == 1:
+            return exact_matches[0]["element_id"]
+
+        if prefer_editable:
+            editable_partial = [
+                element
+                for element in candidates
+                if element["role"] in editable_roles
+                and str(label).casefold() in element["label"].casefold()
+            ]
+            if len(editable_partial) == 1:
+                return editable_partial[0]["element_id"]
+
+        partial_matches = [
+            element
+            for element in candidates
+            if role_ok(element) and str(label).casefold() in element["label"].casefold()
+        ]
+        if len(partial_matches) == 1:
+            return partial_matches[0]["element_id"]
+
+    # DOM attribute match: the LLM may emit the element's real name/id/etc.
+    # Try the requested element_id first, then the label. Labels can differ
+    # between the tool call and execution (e.g. localized labels like
+    # YouTube's "Telusuri" vs "Search") while DOM name/id attributes stay
+    # stable, so a label-based DOM hit is a valid fallback.
+    dom_fields = ("name", "id", "placeholder", "aria_label", "test_id", "title")
+
+    def dom_contains(element: dict[str, Any], needle: str) -> bool:
+        haystack = " ".join(
+            str((element.get("dom") or {}).get(field) or "") for field in dom_fields
+        )
+        return needle.casefold() in haystack.casefold()
+
+    # Numeric requested_ids are selector_map indices (e.g. "4" from the tool
+    # output), never DOM attributes — trying them as DOM substrings could
+    # match an unrelated element that happens to contain the digit. The label
+    # needle stays unconditional (a numeric label like "2024" is legitimate).
+    requested_needle = requested_id if requested_id and not requested_id.isdigit() else ""
+    needles = list(
+        dict.fromkeys(n for n in (requested_needle, str(label or "")) if n)
+    )
+    for needle in needles:
+        # Prefer a unique role-consistent DOM match; the page state can differ
+        # between the tool call and execution (consent dialogs, localized
+        # labels), so fall back to a role-agnostic DOM match — a unique
+        # name/id is a strong enough signal on its own.
+        role_dom_matches = [
+            element
+            for element in candidates
+            if role_ok(element) and dom_contains(element, needle)
+        ]
+        if len(role_dom_matches) == 1:
+            return role_dom_matches[0]["element_id"]
+
+        dom_matches = [element for element in candidates if dom_contains(element, needle)]
+        if len(dom_matches) == 1:
+            return dom_matches[0]["element_id"]
+
+    target = label or requested_id
+    raise ValueError(f"unable to resolve a unique browser element for label: {target}")
 
 
 async def _settle_page(page, *, timeout_ms: int) -> None:

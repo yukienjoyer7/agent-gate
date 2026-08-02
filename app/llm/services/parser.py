@@ -36,6 +36,7 @@ import httpx
 from app.config.settings import get_settings
 from app.core.browser_schema import BrowserElement
 from app.llm.services.parse_old import _classify_prompt_risk
+from app.llm.tools import TOOL_DEFINITIONS, execute_tool
 from app.llm.services.parse_old import parse_prompt as _rule_parse_prompt
 from app.llm.services.parse_old import parse_prompt_plan as _rule_parse_prompt_plan
 
@@ -106,6 +107,15 @@ INTERACTIVE_BROWSER_ACTIONS = {
     "BROWSER_SELECT",
 }
 
+# Actions that resolve page elements by label/role — exactly the ones the
+# accessibility-tree tool exists to support (scroll/screenshot may be page-level).
+_ELEMENT_INTERACTION_ACTIONS = {
+    "BROWSER_CLICK",
+    "BROWSER_TYPE",
+    "BROWSER_SELECT",
+    "BROWSER_SUBMIT",
+}
+
 # Domain fallbacks matching parse_old's DOMAIN_KEYWORDS so an LLM that
 # omits ``domain`` cannot silently downgrade guardrail risk decisions.
 DOMAIN_BY_TARGET_SYSTEM = {
@@ -148,6 +158,36 @@ Rules:
 - target: full URL for browser, recipient address for gmail, owner/repo for github, file path for local_file.
 - Always prepend https:// to bare domains.
 - Keep the plan as short as the instruction requires (single API_CALL/FILE_READ step for connectors)."""
+
+TOOLS_SYSTEM_PROMPT = """
+
+Tools
+-----
+You have access to the following tool:
+- get_accessibility_tree(url, wait_until?, timeout_ms?): Opens the URL in a headless
+  browser and returns the page's accessibility tree: interactive elements with their
+  exact ARIA role, accessible label, and DOM attributes (name, placeholder, aria-label,
+  id, data-testid, text).
+
+Element interaction rules
+-------------------------
+- ALWAYS call get_accessibility_tree on the target URL BEFORE emitting BROWSER_CLICK,
+  BROWSER_TYPE, BROWSER_SCROLL, or BROWSER_SELECT steps.
+- Use the EXACT role/label returned by the tool in payload.role / payload.label. Never
+  guess, abbreviate, or invent labels — always use the exact value the tool returned.
+- Never use the element_id from the tool output — it is only an internal index and is
+  NOT stable at execution time. Rely on role and label only.
+- If the tool returns an error or the page has no matching element, emit the plan with
+  the closest available element, or just BROWSER_OPEN and explain the gap in summary.
+- You may call the tool again after a BROWSER_OPEN step to inspect the loaded page.
+  Keep tool calls minimal: one call per URL is usually enough."""
+
+
+def _system_prompt() -> str:
+    """Full system prompt; tools section only when function calling is enabled."""
+    if get_settings().LLM_TOOLS_ENABLED:
+        return SYSTEM_PROMPT + TOOLS_SYSTEM_PROMPT
+    return SYSTEM_PROMPT
 
 
 # ── Public API (async, LLM-backed with rule-based fallback) ─────────
@@ -201,7 +241,14 @@ def _provider_name() -> str:
 
 
 async def _llm_plan(prompt: str) -> dict[str, Any]:
-    """Call OpenRouter chat completions and return a normalized plan dict."""
+    """
+    Call OpenRouter chat completions and return a normalized plan dict.
+
+    Uses function calling: when the model requests ``get_accessibility_tree``,
+    the tool is executed and its result is fed back into the conversation so
+    the final plan can reference exact element labels/roles from the live page
+    instead of guessed ones.
+    """
     settings = get_settings()
     api_key = settings.OPENROUTER_API_KEY
     if not api_key:
@@ -209,20 +256,110 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
 
     model = settings.OPENROUTER_MODEL or DEFAULT_MODEL
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-        # Ask for JSON + let OpenRouter's free router pick a model that
-        # supports JSON mode, and heal malformed JSON via the plugin.
-        "response_format": {"type": "json_object"},
-        "plugins": [{"id": "response-healing"}],
-    }
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": _system_prompt()},
+        {"role": "user", "content": prompt},
+    ]
+
+    max_tool_iterations = settings.LLM_MAX_TOOL_ITERATIONS
+    tools_used = False
+    for _ in range(max_tool_iterations + 1):
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.2,
+            "plugins": [{"id": "response-healing"}],
+        }
+        if settings.LLM_TOOLS_ENABLED:
+            payload["tools"] = TOOL_DEFINITIONS
+        else:
+            # JSON mode biases models to emit JSON content instead of calling
+            # tools, so only request it when no tools are being offered.
+            payload["response_format"] = {"type": "json_object"}
+
+        data, tools_rejected = await _post_chat(payload)
+        message = _extract_message(data)
+
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            tools_used = True
+            logger.info(
+                "OpenRouter tool call",
+                extra={"llm_model": model, "tool_calls": tool_calls},
+            )
+            # Feed the assistant's tool-call message + results back so the
+            # model can ground its plan in the real page elements.
+            messages.append(message)
+            for tool_call in tool_calls:
+                messages.append(await _build_tool_message(tool_call))
+            continue
+
+        content = message.get("content")
+        try:
+            raw = _extract_json(content)
+        except json.JSONDecodeError as exc:
+            # Keep visibility of what the model actually returned when it is
+            # not valid JSON (the INFO log below is only emitted on success).
+            logger.warning(
+                "OpenRouter returned non-JSON content",
+                extra={"llm_model": model, "llm_raw": content[:2000]},
+            )
+            raise ValueError(f"LLM returned non-JSON content: {exc}") from exc
+
+        steps = [_normalize_step(step) for step in raw.get("plan", []) if isinstance(step, dict)]
+        steps = [step for step in steps if step is not None]
+        # Prepended BROWSER_OPEN first, then apply prompt risk to ALL final steps
+        # so the navigation step also carries a BLOCK hint for destructive prompts.
+        steps = _ensure_open_step(steps)
+        steps = _apply_prompt_risk(steps, prompt)
+
+        if not steps:
+            raise ValueError("LLM returned an empty plan")
+
+        # Warn when a plan targets page elements but the model never used the
+        # accessibility-tree tool — that usually means guessed labels. Skip when
+        # tools are disabled or the router rejected them: the model was never
+        # able to call the tool in those cases.
+        if (
+            settings.LLM_TOOLS_ENABLED
+            and not tools_used
+            and not tools_rejected
+            and any(
+                step.get("action_type") in _ELEMENT_INTERACTION_ACTIONS for step in steps
+            )
+        ):
+            logger.warning(
+                "Browser element plan emitted without a tool call (labels may be guessed)",
+                extra={"llm_model": model, "plan": steps},
+            )
+
+        # INFO level so the LLM output is visible in `docker compose up` logs.
+        # Single structured log line: raw model response + the normalized plan
+        # (extra=... makes python-json-logger emit nested JSON, not escaped text).
+        logger.info(
+            "OpenRouter LLM response",
+            extra={"llm_model": model, "llm_response": raw, "plan": steps},
+        )
+
+        return {"plan": steps, "summary": raw.get("summary", "")}
+
+    raise ValueError(f"LLM exceeded max tool iterations ({max_tool_iterations})")
+
+
+async def _post_chat(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """POST to OpenRouter; retries once without ``tools`` if rejected (400).
+
+    Some free models do not support the ``tools`` parameter. Falling back to a
+    tool-less request keeps planning working while allowing models that DO
+    support function calling to inspect the accessibility tree.
+
+    Returns ``(data, tools_rejected)`` where ``tools_rejected`` is True when the
+    router rejected the ``tools`` parameter and the request was retried without
+    it (the model never had a chance to call a tool).
+    """
+    settings = get_settings()
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://freebuff.com",
         "X-Title": "AgentGate",
@@ -230,52 +367,82 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(settings.OPENROUTER_TIMEOUT)) as client:
         response = await client.post(OPENROUTER_URL, json=payload, headers=headers)
+        # Retry once without ``tools`` only when the router explicitly rejects the
+        # tools parameter (some free models do not support function calling).
+        error_text = getattr(response, "text", "") or ""
+        if (
+            getattr(response, "status_code", None) == 400
+            and payload.get("tools")
+            and ("tool" in error_text.lower() or "function" in error_text.lower())
+        ):
+            logger.warning(
+                "OpenRouter rejected tools parameter (400); retrying without tools"
+            )
+            fallback = dict(payload)
+            fallback.pop("tools", None)
+            # Deep-copy messages so the caller's prompt is not mutated.
+            fallback["messages"] = [dict(message) for message in (payload.get("messages") or [])]
+            # The tool-less model must not be told to call a tool that does not
+            # exist in its payload; swap back to the base (tool-less) prompt and
+            # re-enable JSON mode now that no tools are offered.
+            if fallback["messages"]:
+                fallback["messages"][0]["content"] = SYSTEM_PROMPT
+            fallback["response_format"] = {"type": "json_object"}
+            response = await client.post(OPENROUTER_URL, json=fallback, headers=headers)
+            response.raise_for_status()
+            return response.json(), True
         response.raise_for_status()
-        data = response.json()
+        return response.json(), False
 
+
+def _extract_message(data: dict[str, Any]) -> dict[str, Any]:
+    """Return the assistant message dict from an OpenRouter response."""
     try:
-        content = data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError(f"unexpected OpenRouter response shape: {exc}") from exc
+    if not isinstance(message, dict):
+        raise ValueError("unexpected OpenRouter message shape")
+    return message
 
+
+async def _build_tool_message(tool_call: dict[str, Any]) -> dict[str, Any]:
+    """Execute one tool call and build the ``tool`` message to append."""
+    call_id = str(tool_call.get("id") or "")
+    function = tool_call.get("function") or {}
+    name = str(function.get("name") or "")
+    raw_args = function.get("arguments") or "{}"
     try:
-        raw = _extract_json(content)
-    except json.JSONDecodeError as exc:
-        # Keep visibility of what the model actually returned when it is
-        # not valid JSON (the INFO log below is only emitted on success).
-        logger.warning(
-            "OpenRouter returned non-JSON content",
-            extra={"llm_model": model, "llm_raw": content[:2000]},
-        )
-        raise ValueError(f"LLM returned non-JSON content: {exc}") from exc
+        arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+    except json.JSONDecodeError:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
 
-    steps = [_normalize_step(step) for step in raw.get("plan", []) if isinstance(step, dict)]
-    steps = [step for step in steps if step is not None]
-    # Prepended BROWSER_OPEN first, then apply prompt risk to ALL final steps
-    # so the navigation step also carries a BLOCK hint for destructive prompts.
-    steps = _ensure_open_step(steps)
-    steps = _apply_prompt_risk(steps, prompt)
-
-    if not steps:
-        raise ValueError("LLM returned an empty plan")
-
-    # INFO level so the LLM output is visible in `docker compose up` logs.
-    # Single structured log line: raw model response + the normalized plan
-    # (extra=... makes python-json-logger emit nested JSON, not escaped text).
-    logger.info(
-        "OpenRouter LLM response",
-        extra={"llm_model": model, "llm_response": raw, "plan": steps},
-    )
-
-    return {"plan": steps, "summary": raw.get("summary", "")}
+    result = await execute_tool(name, arguments)
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": json.dumps(result),
+    }
 
 
-def _extract_json(content: str) -> dict[str, Any]:
-    """Extract the first JSON object from model output (handles markdown fences)."""
-    text = content.strip()
+def _extract_json(content: str | None) -> dict[str, Any]:
+    """Extract a JSON object from model output (handles markdown fences and
+    the bare-array shape some free models return instead of {"plan": [...]})."""
+    text = (content or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
+
+    # Free models sometimes return just the step list: [{...}, {...}] instead
+    # of the documented {"plan": [...], "summary": ...} envelope.
+    if text.startswith("[") and text.endswith("]"):
+        steps = json.loads(text)
+        if isinstance(steps, list):
+            return {"plan": steps}
+
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end > start:

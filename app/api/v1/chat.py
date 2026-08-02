@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.config.settings import get_settings
 from app.llm.services import parse_prompt_plan
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -140,6 +141,32 @@ async def _execute_browser(steps: list[dict[str, Any]], prompt: str) -> dict[str
     from app.domains.guardrail.decision import decide
 
     url = _find_url(steps)
+    if not url:
+        # Keep the AuditEvent response shape (consumers read execution_status /
+        # execution_json) instead of a bare 400 detail — this path triggers
+        # whenever the rule-based fallback parses a URL-less browser plan.
+        from app.core.action_request import build_action_request
+        from app.core.schemas import ExecutionResult, ExecutionStatus
+        from app.domains.audit.repositories import get_audit_repository
+        from app.domains.guardrail.decision import decide
+
+        proposal = {**(steps[0] if steps else {}), "user_goal": prompt}
+        request = build_action_request(proposal)
+        response = decide(request)
+        execution = ExecutionResult(
+            run_id=request.run_id,
+            action_id=request.action_id,
+            executor="router",
+            status=ExecutionStatus.FAILED,
+            result_summary="plan has no browser URL to open (check the parsed plan)",
+            error={
+                "code": "INVALID_PLAN",
+                "message": "plan has no browser URL to open (check the parsed plan)",
+            },
+        )
+        event = await get_audit_repository().write(request, response, execution)
+        return event.model_dump(mode="json")
+
     browser_actions = _plan_to_browser_actions(steps)
 
     # ── Evaluate ALL steps ────────────────────────────────────────
@@ -198,6 +225,11 @@ async def _execute_browser(steps: list[dict[str, Any]], prompt: str) -> dict[str
         actions=browser_actions or None,
         user_goal=prompt,
         risk_hint="unknown",
+        # SPA pages (e.g. YouTube) render interactive headers slightly after
+        # domcontentloaded; settle briefly so the search box is in the snapshot
+        # before elements are resolved against it. Kept in lockstep with the
+        # planner tool via BROWSER_SETTLE_MS.
+        settle_ms=get_settings().BROWSER_SETTLE_MS,
     )
     return event.model_dump(mode="json")
 
@@ -227,7 +259,9 @@ def _plan_to_browser_actions(steps: list[dict[str, Any]]) -> list[dict[str, Any]
         "BROWSER_TYPE": "fill",
         "BROWSER_SCROLL": "scroll",
         "BROWSER_SCREENSHOT": "screenshot",
-        "BROWSER_SUBMIT": "click",
+        # Submit maps to Enter-press so search/forms actually execute instead
+        # of merely focusing the element (clicking an input does nothing).
+        "BROWSER_SUBMIT": "submit",
         "BROWSER_SELECT": "click",
     }
 

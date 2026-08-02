@@ -1,6 +1,7 @@
 """Tests for the OpenRouter-backed LLM parser (app.llm.services.parser)."""
 
 import asyncio
+import json
 
 import httpx
 
@@ -195,6 +196,261 @@ class TestParsePromptPlan:
         assert result["parsed"]["action_type"] == "BROWSER_CLICK"  # last non-OPEN step
 
 
+class TestToolCallLoop:
+    """Verify function calling: tools are sent, results fed back, plan returned."""
+
+    def test_tool_call_is_executed_and_result_fed_back(self, monkeypatch) -> None:
+        """A tool_calls response runs the tool and continues to the final plan."""
+        calls: list[dict] = []
+
+        async def fake_post(self, url, json=None, headers=None):
+            calls.append(json)
+            if len(calls) == 1:
+                return _Resp(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "get_accessibility_tree",
+                                                "arguments": '{"url": "https://playwright.dev"}',
+                                            },
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+            return _Resp(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    '{"plan": [{"action_type": "BROWSER_CLICK", '
+                                    '"target_system": "browser", '
+                                    '"target": "https://playwright.dev", '
+                                    '"payload": {"label": "Get started", "role": "link"}}], '
+                                    '"summary": "Click Get started"}'
+                                ),
+                            }
+                        }
+                    ]
+                }
+            )
+
+        async def fake_execute_tool(name: str, arguments: dict) -> dict:
+            assert name == "get_accessibility_tree"
+            assert arguments == {"url": "https://playwright.dev"}
+            return {"url": "https://playwright.dev", "count": 1, "elements": []}
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        monkeypatch.setattr(llm_parser, "execute_tool", fake_execute_tool)
+        try:
+            result = _run(
+                llm_parser.parse_prompt_plan("Click Get started on playwright.dev")
+            )
+        finally:
+            get_settings.cache_clear()
+
+        assert len(calls) == 2
+        # First request carries the tool definition; second carries tool result.
+        assert any("get_accessibility_tree" in json.dumps(tool)
+                   for tool in (calls[0].get("tools") or []))
+        tool_messages = [
+            msg for msg in calls[1]["messages"] if msg.get("role") == "tool"
+        ]
+        assert len(tool_messages) == 1
+        assert tool_messages[0]["tool_call_id"] == "call_1"
+        assert "url" in tool_messages[0]["content"]
+        # _ensure_open_step prepends navigation, so the click is the last step.
+        assert result["plan"][0]["action_type"] == "BROWSER_OPEN"
+        assert result["plan"][-1]["action_type"] == "BROWSER_CLICK"
+        assert result["plan"][-1]["payload"]["label"] == "Get started"
+
+    def test_tool_calls_loop_capped_by_max_iterations(self, monkeypatch) -> None:
+        """Endless tool calls hit the iteration cap and raise (→ rule fallback)."""
+        async def fake_post(self, url, json=None, headers=None):
+            return _Resp(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_x",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_accessibility_tree",
+                                            "arguments": '{"url": "https://x.dev"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            )
+
+        async def fake_execute_tool(name: str, arguments: dict) -> dict:
+            return {"error": "boom"}
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_MAX_TOOL_ITERATIONS", "2")
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        monkeypatch.setattr(llm_parser, "execute_tool", fake_execute_tool)
+        try:
+            result = _run(
+                llm_parser.parse_prompt_plan("Click something on x.dev")
+            )
+        finally:
+            get_settings.cache_clear()
+
+        # Falls back to the rule-based parser instead of hanging forever.
+        assert result["llm_provider"] == "dummy"
+
+    def test_response_format_omitted_when_tools_enabled(self, monkeypatch) -> None:
+        """JSON mode biases models against tool calls; only send it tool-less."""
+        calls: list[dict] = []
+
+        async def fake_post(self, url, json=None, headers=None):
+            calls.append(json)
+            return _Resp(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    '{"plan": [{"action_type": "BROWSER_OPEN", '
+                                    '"target_system": "browser", '
+                                    '"target": "https://x.dev"}], "summary": "x"}'
+                                ),
+                            }
+                        }
+                    ]
+                }
+            )
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        try:
+            _run(llm_parser.parse_prompt_plan("Open x.dev"))
+        finally:
+            get_settings.cache_clear()
+
+        assert "tools" in calls[0]
+        assert "response_format" not in calls[0]
+
+    def test_response_format_sent_when_tools_disabled(self, monkeypatch) -> None:
+        """Without function calling we still ask for strict JSON output."""
+        calls: list[dict] = []
+
+        async def fake_post(self, url, json=None, headers=None):
+            calls.append(json)
+            return _Resp(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    '{"plan": [{"action_type": "BROWSER_OPEN", '
+                                    '"target_system": "browser", '
+                                    '"target": "https://x.dev"}], "summary": "x"}'
+                                ),
+                            }
+                        }
+                    ]
+                }
+            )
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_TOOLS_ENABLED", "false")
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        try:
+            result = _run(llm_parser.parse_prompt_plan("Open x.dev"))
+        finally:
+            get_settings.cache_clear()
+
+        assert "tools" not in calls[0]
+        assert calls[0]["response_format"] == {"type": "json_object"}
+        assert result["llm_provider"] == "openrouter/free"
+
+    def test_retries_without_tools_when_rejected_400(self, monkeypatch) -> None:
+        """Models without tool support: first request 400 → retry without tools."""
+        calls: list[dict] = []
+
+        async def fake_post(self, url, json=None, headers=None):
+            calls.append(json)
+            if len(calls) == 1:
+                resp = httpx.Response(
+                    400,
+                    json={"error": {"message": "model does not support tools"}},
+                    request=httpx.Request("POST", url),
+                )
+                return resp
+            return _Resp(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    '{"plan": [{"action_type": "BROWSER_OPEN", '
+                                    '"target_system": "browser", '
+                                    '"target": "https://playwright.dev"}], "summary": "x"}'
+                                ),
+                            }
+                        }
+                    ]
+                }
+            )
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        try:
+            result = _run(
+                llm_parser.parse_prompt_plan("Open playwright.dev")
+            )
+        finally:
+            get_settings.cache_clear()
+
+        assert len(calls) == 2
+        assert "tools" in calls[0]
+        assert "tools" not in calls[1]
+        assert result["plan"][0]["action_type"] == "BROWSER_OPEN"
+
+
+class _Resp:
+    """Minimal stand-in for an httpx.Response used by tests."""
+
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return self._data
+
+
 class TestLlmPlanPipeline:
     """Verify _llm_plan wires normalize → risk → ensure_open in the right order."""
 
@@ -266,6 +522,19 @@ class TestFallback:
     def test_extract_json_handles_markdown_fence(self) -> None:
         content = '```json\n{"plan": [], "summary": "x"}\n```'
         assert llm_parser._extract_json(content) == {"plan": [], "summary": "x"}
+
+    def test_extract_json_handles_bare_step_array(self) -> None:
+        """Free models sometimes return [{...}] instead of {"plan": [...]}."""
+        content = (
+            '[{"action_type": "BROWSER_OPEN", "target_system": "browser", '
+            '"target": "https://youtube.com"}, '
+            '{"action_type": "BROWSER_TYPE", "target_system": "browser", '
+            '"target": "https://youtube.com"}]'
+        )
+        result = llm_parser._extract_json(content)
+        assert "plan" in result
+        assert len(result["plan"]) == 2
+        assert result["plan"][0]["action_type"] == "BROWSER_OPEN"
 
 
 class TestPromptRiskSafetyNet:

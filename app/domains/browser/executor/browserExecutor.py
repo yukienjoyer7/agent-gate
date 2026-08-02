@@ -69,6 +69,29 @@ async def fill(
 
     await locator.fill(value)
 
+# Submit
+async def submit(
+    page,
+    selector_map,
+    element_id
+):
+
+    locator = await resolve_locator(
+        page,
+        selector_map,
+        element_id
+    )
+
+    await ensure_actionable(
+        page,
+        locator
+    )
+
+    # Press Enter on the element (search box / input / focused button) to
+    # trigger the form/search submission instead of a plain click, which only
+    # focuses inputs (e.g. YouTube's search box).
+    await locator.press("Enter")
+
 # Scroll
 async def scroll(
     page,
@@ -154,6 +177,14 @@ async def execute_action(
             selector_map,
             action["element_id"],
             action["value"]
+        )
+
+    elif action_type == "submit":
+
+        await submit(
+            page,
+            selector_map,
+            action["element_id"]
         )
 
     elif action_type == "scroll":
