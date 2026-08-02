@@ -31,9 +31,9 @@ class Settings(BaseSettings):
 
     # Connector Credentials
     GITHUB_TOKEN: str = ""
+    GMAIL_ACCESS_TOKEN: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
     XENDIT_API_KEY: str = ""
-    GMAIL_CREDENTIALS_PATH: str = "credentials/gmail_token.json"
 
     # LLM (OpenRouter)
     OPENROUTER_API_KEY: str = ""
