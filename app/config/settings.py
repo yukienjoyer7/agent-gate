@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     # Browser / Playwright
     PLAYWRIGHT_HEADLESS: bool = True
-    PLAYWRIGHT_MAX_ELEMENTS: int = Field(default=50, ge=10, le=200)
+    PLAYWRIGHT_MAX_ELEMENTS: int = Field(default=500, ge=10, le=500)
     BROWSER_MAX_CONCURRENT_SESSIONS: int = Field(default=10, ge=1, le=100)
     # SPA pages (e.g. YouTube) render interactive headers slightly after
     # domcontentloaded; both the planner tool (get_accessibility_tree) and the

@@ -42,8 +42,8 @@ from app.llm.services.parse_old import parse_prompt_plan as _rule_parse_prompt_p
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "openrouter/free"
+OPENROUTER_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+DEFAULT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
 
 # Aliases free models commonly return instead of the canonical action_type.
 # ``action`` → ``action_type`` mapping mirrors parse_old's ACTION_KEYWORDS.

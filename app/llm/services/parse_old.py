@@ -119,6 +119,8 @@ STOP_WORDS = frozenset(
     }
 )
 
+SEARCH_SUBMIT_DELAY_MS = 2000
+
 # ── Risk keyword detection ──────────────────────────────────────────
 # These keywords in a prompt override the default risk_hint.
 # Ordered from longest phrase to shortest for greedy matching.
@@ -189,6 +191,23 @@ def parse_prompt_plan(prompt: str) -> dict[str, Any]:
             "human_readable": "\n" + single["human_readable"],
         }
 
+    search_plan = build_browser_search_plan(
+        prompt,
+        prompt.lower().strip(),
+        parsed.get("domain", "browser"),
+    )
+    if search_plan:
+        lines: list[str] = []
+        for i, s in enumerate(search_plan, 1):
+            tgt = _step_target(s)
+            lbl, role, val = _step_details(s)
+            lines.append(f"  {i}. {_describe(s['action_type'], tgt, lbl, role, val)}")
+        return {
+            "plan": search_plan,
+            "llm_provider": single["llm_provider"],
+            "raw_prompt": prompt,
+            "human_readable": "\n" + "\n".join(lines),
+        }
     # Browser actions: may expand to BROWSER_OPEN + action
     url = parsed.get("target") or parsed["payload"].get("url", "")
     action_type = parsed["action_type"]
@@ -227,6 +246,129 @@ def parse_prompt_plan(prompt: str) -> dict[str, Any]:
 
 # ── Domain detection ────────────────────────────────────────────────
 
+
+def build_browser_search_plan(
+    prompt: str,
+    prompt_lower: str,
+    domain_name: str = "browser",
+) -> list[dict[str, Any]] | None:
+    """Expand browser search prompts into open -> type -> submit -> optional screenshot."""
+    url = _extract_url(prompt)
+    query = _extract_search_query(prompt, prompt_lower)
+    if not url or not query:
+        return None
+
+    risk_hint = _classify_prompt_risk(prompt_lower) or "unknown"
+    steps = [
+        {
+            "source": "chat",
+            "domain": domain_name,
+            "action_type": "BROWSER_OPEN",
+            "target_system": "browser",
+            "target": url,
+            "risk_hint": risk_hint,
+            "payload": {"url": url},
+        },
+        _browser_search_step(
+            action_type="BROWSER_TYPE",
+            url=url,
+            domain_name=domain_name,
+            risk_hint=risk_hint,
+            value=query,
+        ),
+        _browser_search_step(
+            action_type="BROWSER_SUBMIT",
+            url=url,
+            domain_name=domain_name,
+            risk_hint=risk_hint,
+            delay_ms=SEARCH_SUBMIT_DELAY_MS,
+        ),
+    ]
+    if _wants_screenshot(prompt_lower):
+        steps.append(
+            {
+                "source": "chat",
+                "domain": domain_name,
+                "action_type": "BROWSER_SCREENSHOT",
+                "target_system": "browser",
+                "target": url,
+                "risk_hint": risk_hint,
+                "payload": {"url": url},
+            }
+        )
+    return steps
+
+
+def _browser_search_step(
+    *,
+    action_type: str,
+    url: str,
+    domain_name: str,
+    risk_hint: str,
+    value: str | None = None,
+    delay_ms: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "url": url,
+        "action_type": action_type,
+        "element_id": "search_query",
+        "label": "Search",
+        "role": "combobox",
+    }
+    if value is not None:
+        payload["value"] = value
+    if delay_ms is not None:
+        payload["delay_ms"] = delay_ms
+
+    return {
+        "source": "chat",
+        "domain": domain_name,
+        "action_type": action_type,
+        "target_system": "browser",
+        "target": url,
+        "risk_hint": risk_hint,
+        "payload": payload,
+    }
+
+
+def _extract_search_query(prompt: str, prompt_lower: str) -> str | None:
+    if "search" not in prompt_lower:
+        return None
+
+    for match in re.finditer(r"\bsearch(?:\s+for)?\s+(.+)", prompt, flags=re.IGNORECASE):
+        candidate = match.group(1).strip()
+        candidate = re.split(
+            r"\s*,?\s*(?:and|then)\s+(?:take\s+(?:a\s+)?)?(?:screenshot|screen shot|capture)\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        candidate = re.split(
+            r"\s+(?:on|at|in)\s+(?:https?://)?(?:www\.)?[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}(?::\d+)?(?:/[^\s,;)]*)?",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        query = candidate.strip(" \t\r\n,.;:'\"")
+        query_lower = query.casefold()
+        non_queries = {
+            "bar",
+            "box",
+            "button",
+            "field",
+            "input",
+            "search bar",
+            "search box",
+            "searchbar",
+            "textbox",
+        }
+        if query_lower and query_lower not in non_queries:
+            return query
+    return None
+
+
+def _wants_screenshot(prompt_lower: str) -> bool:
+    return any(term in prompt_lower for term in ("screenshot", "screen shot", "capture"))
 
 def _detect_domain_info(prompt_lower: str) -> tuple[str, str]:
     """

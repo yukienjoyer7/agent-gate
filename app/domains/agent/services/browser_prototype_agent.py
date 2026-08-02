@@ -415,9 +415,14 @@ def _find_element_id(action: dict[str, Any], page_model: BrowserPageModel) -> st
 
 
 async def _settle_page(page, *, timeout_ms: int) -> None:
+    for state, limit_ms in (("domcontentloaded", 5_000), ("load", 5_000), ("networkidle", 1_500)):
+        try:
+            await page.wait_for_load_state(state, timeout=min(timeout_ms, limit_ms))
+        except PlaywrightTimeoutError:
+            pass
     try:
-        await page.wait_for_load_state("domcontentloaded", timeout=min(timeout_ms, 5_000))
-    except PlaywrightTimeoutError:
+        await page.wait_for_timeout(250)
+    except PlaywrightError:
         pass
 
 

@@ -72,11 +72,12 @@ def test_plan_to_browser_actions_maps_submit() -> None:
             "action_type": "BROWSER_SUBMIT",
             "target_system": "browser",
             "target": "https://www.youtube.com",
-            "payload": {"label": "Search", "element_id": "search_query", "role": "combobox"},
+            "payload": {"label": "Search", "element_id": "search_query", "role": "combobox", "delay_ms": 2000},
         },
     ]
     actions = _plan_to_browser_actions(steps)
 
     assert [action["type"] for action in actions] == ["fill", "submit"]
     assert actions[1]["element_id"] == "search_query"
+    assert actions[1]["delay_ms"] == 2000
     assert actions[0]["value"] == "jerome"

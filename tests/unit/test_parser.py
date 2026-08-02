@@ -260,6 +260,23 @@ class TestParsePromptPlan:
         assert len(plan) == 2
         assert plan[0]["action_type"] == "BROWSER_OPEN"
 
+    def test_search_and_screenshot_expands_to_submit_sequence(self) -> None:
+        result = parse_prompt_plan("open youtube.com, search jerome, and screenshot")
+        plan = result["plan"]
+
+        assert [step["action_type"] for step in plan] == [
+            "BROWSER_OPEN",
+            "BROWSER_TYPE",
+            "BROWSER_SUBMIT",
+            "BROWSER_SCREENSHOT",
+        ]
+        assert plan[0]["target"] == "https://youtube.com"
+        assert plan[1]["payload"]["element_id"] == "search_query"
+        assert plan[1]["payload"]["label"] == "Search"
+        assert plan[1]["payload"]["value"] == "jerome"
+        assert plan[2]["payload"]["delay_ms"] == 2000
+        assert all(step["risk_hint"] == "unknown" for step in plan)
+
 
 class TestBrowserDomainDetection:
     """Verify that browser actions use the correct domain from DOMAIN_KEYWORDS."""

@@ -274,15 +274,21 @@ def _plan_to_browser_actions(steps: list[dict[str, Any]]) -> list[dict[str, Any]
         if not browser_type:
             continue
         payload = step.get("payload", {})
+        payload = payload if isinstance(payload, dict) else {}
         action: dict[str, Any] = {"type": browser_type}
-        if payload.get("label"):
-            action["label"] = payload["label"]
-        if payload.get("element_id"):
-            action["element_id"] = payload["element_id"]
-        if payload.get("role"):
-            action["role"] = payload["role"]
-        if payload.get("value"):
-            action["value"] = payload["value"]
+        for key in ("label", "element_id", "role"):
+            if payload.get(key):
+                action[key] = payload[key]
+
+        value = payload.get("value") or payload.get("query") or payload.get("text")
+        if value:
+            action["value"] = value
+
+        for key in ("delay_ms", "duration_ms", "x", "y", "path", "full_page"):
+            if key in payload:
+                action[key] = payload[key]
+            elif key in step:
+                action[key] = step[key]
         actions.append(action)
 
     return actions

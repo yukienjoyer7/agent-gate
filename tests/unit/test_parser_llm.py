@@ -49,6 +49,24 @@ class TestNormalizeStep:
         assert navigate["action_type"] == "BROWSER_OPEN"
         assert navigate["target"] == "https://x.dev"
 
+    def test_search_alias_normalizes_to_search_box_type(self) -> None:
+        step = llm_parser._normalize_step(
+            {
+                "action": "search",
+                "target_system": "browser",
+                "target": "youtube.com",
+                "query": "jerome",
+            }
+        )
+
+        assert step is not None
+        assert step["action_type"] == "BROWSER_TYPE"
+        assert step["target"] == "https://youtube.com"
+        assert step["payload"]["element_id"] == "search_query"
+        assert step["payload"]["label"] == "Search"
+        assert step["payload"]["role"] == "combobox"
+        assert step["payload"]["value"] == "jerome"
+
     def test_unknown_risk_hint_normalized(self) -> None:
         step = llm_parser._normalize_step(
             {"action_type": "API_CALL", "target_system": "gmail", "risk_hint": "not_a_hint"}
@@ -493,6 +511,56 @@ class TestLlmPlanPipeline:
         # safety net ran after normalization: both steps carry the BLOCK hint
         assert result["plan"][0]["risk_hint"] == "destructive"
         assert result["plan"][1]["risk_hint"] == "destructive"
+
+    def test_search_prompt_repairs_incomplete_llm_plan(self, monkeypatch) -> None:
+        async def fake_post(self, url, json=None, headers=None):
+            class _Resp:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": (
+                                        '{"plan": ['
+                                        '{"action_type": "BROWSER_OPEN", '
+                                        '"target_system": "browser", '
+                                        '"target": "https://youtube.com"}, '
+                                        '{"action_type": "BROWSER_SCREENSHOT", '
+                                        '"target_system": "browser", '
+                                        '"target": "https://youtube.com"}], '
+                                        '"summary": "Open YouTube and screenshot"}'
+                                    )
+                                }
+                            }
+                        ]
+                    }
+
+            return _Resp()
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENROUTER_MODEL", "openrouter/free")
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        try:
+            result = _run(
+                llm_parser.parse_prompt_plan(
+                    "open youtube.com, search jerome, and screenshot"
+                )
+            )
+        finally:
+            get_settings.cache_clear()
+
+        assert [step["action_type"] for step in result["plan"]] == [
+            "BROWSER_OPEN",
+            "BROWSER_TYPE",
+            "BROWSER_SUBMIT",
+            "BROWSER_SCREENSHOT",
+        ]
+        assert result["plan"][1]["payload"]["value"] == "jerome"
+        assert result["plan"][2]["payload"]["delay_ms"] == 2000
 
 
 class TestFallback:

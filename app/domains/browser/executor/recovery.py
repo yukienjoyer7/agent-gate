@@ -21,37 +21,45 @@ from app.domains.browser.selector_map.locatorRanker import (
 from app.domains.browser.executor.locatorResolver import resolve_locator
 
 POPUP_KEYWORDS = {
-
+    # Generic
     "close",
     "dismiss",
     "skip",
     "later",
     "cancel",
-    "no thanks",
     "not now",
+    "no thanks",
 
-    # Consent / cookie dialogs (e.g. YouTube's "Accept all" / "Reject all")
-    # intermittently overlay the page in headless sessions and occlude the
-    # target element; recovery must be able to dismiss them. Compound phrases
-    # only — bare "accept"/"agree"/"allow" would also match ordinary form
-    # buttons ("Accept", "I agree to terms"), which recovery must never click.
+    # Consent / cookies
+    "accept",
     "accept all",
-    "reject all",
-    "allow all",
+    "allow",
+    "agree",
     "i agree",
-    "agree and continue",
-    "decline",
     "got it",
+    "ok",
+    "okay",
+    "continue",
 
+    # Google / YouTube
+    "reject",
+    "reject all",
+    "manage options",
+    "customize",
+
+    # Indonesian
     "tutup",
     "lewati",
     "batal",
     "nanti",
     "setuju",
     "terima",
-    "tolak",
     "izinkan",
+    "tolak",
 
+    "×",
+    "✕",
+    "x",
 }
 
 # Single-character close glyphs (e.g. "×" on a dialog) match only when the
@@ -219,6 +227,15 @@ async def recover(page):
 
     await page.wait_for_timeout(300)
 
+    if await try_cookie_buttons(page):
+        await page.wait_for_timeout(500)
+        return
+    
+    closed = await recover_popup(page)
+
+    if closed:
+        await page.wait_for_timeout(500)
+
     # Strategy 2: top-frame popup/consent buttons
     if await recover_popup(page):
         await page.wait_for_timeout(300)
@@ -231,3 +248,24 @@ async def recover(page):
         await page.wait_for_timeout(300)
 
     return
+
+async def try_cookie_buttons(page):
+    candidates = [
+        "button:has-text('Accept all')",
+        "button:has-text('Accept')",
+        "button:has-text('I agree')",
+        "button:has-text('Reject all')",
+        "button:has-text('Reject')",
+        "button:has-text('Not now')",
+    ]
+
+    for selector in candidates:
+        try:
+            button = page.locator(selector).first
+            if await button.is_visible(timeout=1000):
+                await button.click()
+                return True
+        except Exception:
+            pass
+
+    return False
