@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AgentGate — live demo</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #171a21; --border: #2a2e38; --text: #e6e8ec;
+    --muted: #8b8f99; --accent: #5b8def;
+    --allow: #3fb950; --block: #f85149; --approval: #d29922;
+    --sanitize: #a371f7; --ask: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", sans-serif;
+    max-width: 720px; margin: 40px auto; padding: 0 20px;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+  .row { display: flex; gap: 8px; }
+  input[type=text] {
+    flex: 1; background: var(--card); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 12px; border-radius: 8px; font-size: 14px;
+  }
+  button {
+    background: var(--accent); color: white; border: none; padding: 10px 16px;
+    border-radius: 8px; font-size: 14px; cursor: pointer; font-weight: 500;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button.reject { background: var(--block); }
+  .examples { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .examples span {
+    font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 14px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  .examples span:hover { color: var(--text); border-color: var(--accent); }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin-top: 16px;
+  }
+  .card h3 { margin: 0 0 8px; font-size: 13px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  pre { margin: 0; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; color: var(--text); }
+  .badge {
+    display: inline-block; font-size: 12px; font-weight: 500; padding: 3px 10px;
+    border-radius: 12px; margin-bottom: 10px;
+  }
+  .badge.SUCCESS, .badge.resolved { background: rgba(63,185,80,0.15); color: var(--allow); }
+  .badge.BLOCKED { background: rgba(248,81,73,0.15); color: var(--block); }
+  .badge.FAILED, .badge.REJECTED { background: rgba(248,81,73,0.15); color: var(--block); }
+  .badge.pending_approval { background: rgba(210,153,34,0.15); color: var(--approval); }
+  .badge.pending_question { background: rgba(88,166,255,0.15); color: var(--ask); }
+  .badge.EXPIRED, .badge.CANCELLED { background: rgba(139,143,153,0.15); color: var(--muted); }
+  .reasons { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+  .actions { margin-top: 12px; display: flex; gap: 8px; }
+  .field-input { margin-top: 10px; }
+  .field-input label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .spinner { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>AgentGate — live demo</h1>
+  <div class="sub">An LLM turns your goal into an action proposal, which runs through the real guardrail pipeline.</div>
+
+  <div class="row">
+    <input type="text" id="goal" placeholder="e.g. read the sample file, or archive my old newsletters">
+    <button id="askBtn" onclick="ask()">Ask the agent</button>
+  </div>
+  <div class="examples" id="examples"></div>
+
+  <div id="proposalCard" class="card" style="display:none">
+    <h3>Proposal</h3>
+    <pre id="proposalJson"></pre>
+    <div class="actions">
+      <button id="submitBtn" onclick="submitProposal()">Run through AgentGate</button>
+    </div>
+  </div>
+
+  <div id="resultCard" class="card" style="display:none"></div>
+
+<script>
+const examples = [
+  "read the file sample.txt",
+  "read a file for me",
+  "archive all emails older than 30 days",
+  "delete the agent-gate repo",
+  "read the production settings.py",
+  "email reviewer@example.com about the outage",
+];
+document.getElementById("examples").innerHTML = examples.map(
+  e => `<span onclick="document.getElementById('goal').value='${e}'">${e}</span>`
+).join("");
+
+let currentProposal = null;
+
+function esc(s) { return (s || "").replace(/</g, "&lt;"); }
+
+async function post(url, body) {
+  const resp = await fetch(url, { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body || {}) });
+  const raw = await resp.text();
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`Server error (${resp.status}): ${raw.slice(0, 500)}`);
+  }
+  if (!resp.ok) {
+    const detail = data.detail || resp.statusText;
+    const tb = data.traceback ? `\n\n${data.traceback}` : "";
+    throw new Error(detail + tb);
+  }
+  return data;
+}
+
+async function ask() {
+  const goal = document.getElementById("goal").value.trim();
+  if (!goal) return;
+  const btn = document.getElementById("askBtn");
+  btn.disabled = true; btn.textContent = "Thinking…";
+  document.getElementById("resultCard").style.display = "none";
+  try {
+    const { proposal } = await post("/api/propose", { goal });
+    currentProposal = proposal;
+    document.getElementById("proposalJson").textContent = JSON.stringify(proposal, null, 2);
+    document.getElementById("proposalCard").style.display = "block";
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "Ask the agent";
+  }
+}
+
+async function submitProposal() {
+  const btn = document.getElementById("submitBtn");
+  btn.disabled = true; btn.textContent = "Running…";
+  try {
+    const result = await post("/api/submit", { proposal: currentProposal });
+    renderResult(result);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "Run through AgentGate";
+  }
+}
+
+function renderResult(result) {
+  const card = document.getElementById("resultCard");
+  card.style.display = "block";
+  const d = result.decision_json || {};
+  const reasons = (d.reasons || []).map(esc).join(" · ");
+
+  if (result.kind === "audit") {
+    card.innerHTML = `
+      <span class="badge ${esc(result.execution_status)}">${esc(result.execution_status)}</span>
+      <div><strong>${esc(d.decision)}</strong> — action_id ${esc(result.action_id)}</div>
+      <div class="reasons">${reasons}</div>
+    `;
+  } else if (result.kind === "pending_approval") {
+    card.innerHTML = `
+      <span class="badge pending_approval">Awaiting approval</span>
+      <div><strong>NEED_APPROVAL</strong> — action_id ${esc(result.action_id)}</div>
+      <div class="reasons">${reasons}</div>
+      <div class="actions">
+        <button onclick="decideApproval('${result.action_id}','APPROVE')">Approve</button>
+        <button class="reject" onclick="decideApproval('${result.action_id}','REJECT')">Reject</button>
+      </div>
+    `;
+  } else if (result.kind === "pending_question") {
+    const q = esc(d.clarifying_question || "This action needs more information.");
+    card.innerHTML = `
+      <span class="badge pending_question">Needs clarification</span>
+      <div><strong>ASK_USER</strong> — action_id ${esc(result.action_id)}</div>
+      <div class="reasons">${q}</div>
+      <div class="field-input">
+        <label>Missing field name (e.g. path, to, subject)</label>
+        <input type="text" id="fieldName-${result.action_id}" placeholder="path">
+      </div>
+      <div class="field-input">
+        <label>Value</label>
+        <input type="text" id="fieldValue-${result.action_id}" placeholder="sample.txt">
+      </div>
+      <div class="actions">
+        <button onclick="respondAskUser('${result.action_id}', true)">Submit answer</button>
+        <button class="secondary" onclick="respondAskUser('${result.action_id}', false)">Cancel action</button>
+      </div>
+    `;
+  }
+}
+
+async function decideApproval(actionId, decision) {
+  try {
+    const result = await post("/api/approvals/decide", { action_id: actionId, decision });
+    renderResult(result);
+  } catch (e) { alert(e.message); }
+}
+
+async function respondAskUser(actionId, proceed) {
+  let payload_updates = null;
+  if (proceed) {
+    const name = document.getElementById(`fieldName-${actionId}`).value.trim();
+    const value = document.getElementById(`fieldValue-${actionId}`).value.trim();
+    if (name && value) payload_updates = { [name]: value };
+  }
+  try {
+    const result = await post("/api/ask-user/respond", { action_id: actionId, proceed, payload_updates });
+    renderResult(result);
+  } catch (e) { alert(e.message); }
+}
+</script>
+</body>
+</html>
