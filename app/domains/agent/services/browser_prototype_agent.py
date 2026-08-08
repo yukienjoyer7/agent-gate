@@ -25,6 +25,49 @@ from app.domains.guardrail.decision import decide
 
 SUPPORTED_BROWSER_ACTIONS = {"click", "fill", "submit", "scroll", "screenshot"}
 
+# ActionRequest.action_type -> browser action "type" this module executes.
+# Submit maps to Enter-press so search/forms actually execute instead of
+# merely focusing the element (clicking an input does nothing).
+BROWSER_ACTION_TYPE_MAP = {
+    "BROWSER_CLICK": "click",
+    "BROWSER_TYPE": "fill",
+    "BROWSER_SCROLL": "scroll",
+    "BROWSER_SCREENSHOT": "screenshot",
+    "BROWSER_SUBMIT": "submit",
+    "BROWSER_SELECT": "click",
+}
+
+
+def plan_step_to_browser_action(step: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert one plan-step dict (``action_type`` + ``payload``) into the
+    ``{"type": ..., ...}`` action this module's executor consumes.
+
+    Returns ``None`` for steps with no browser-action equivalent (e.g.
+    ``BROWSER_OPEN``/``BROWSER_SNAPSHOT``, which just navigate + snapshot).
+    """
+    browser_type = BROWSER_ACTION_TYPE_MAP.get(step.get("action_type"))
+    if not browser_type:
+        return None
+
+    payload = step.get("payload", {})
+    payload = payload if isinstance(payload, dict) else {}
+    browser_action: dict[str, Any] = {"type": browser_type}
+    for key in ("label", "element_id", "role"):
+        if payload.get(key):
+            browser_action[key] = payload[key]
+
+    value = payload.get("value") or payload.get("query") or payload.get("text")
+    if value:
+        browser_action["value"] = value
+
+    for key in ("delay_ms", "duration_ms", "x", "y", "path", "full_page"):
+        if key in payload:
+            browser_action[key] = payload[key]
+        elif key in step:
+            browser_action[key] = step[key]
+
+    return browser_action
+
 
 @dataclass
 class BrowserPageModel:

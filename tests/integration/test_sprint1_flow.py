@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from app.config.settings import get_settings
 from app.domains.agent.services import run_guarded_action
 from app.domains.audit.repositories import AuditRepository
@@ -34,18 +36,27 @@ def test_guarded_local_file_flow(tmp_path, monkeypatch):
 
 
 def test_guarded_browser_snapshot_flow(tmp_path):
+    """ExecutionRouter routes BROWSER_* actions through the real Playwright
+    pipeline (app.executors.browser_executor.BrowserExecutor), not a mock.
+    Uses a data: URL so the test stays hermetic (no real network needed)."""
+    page_url = "data:text/html,<html><body><button>Continue</button></body></html>"
     event = asyncio.run(
         run_guarded_action(
             {
                 "action_type": "BROWSER_SNAPSHOT",
                 "target_system": "browser",
-                "target": "https://example.test/demo",
-                "payload": {"url": "https://example.test/demo"},
+                "target": page_url,
+                "payload": {"url": page_url},
             },
             audit=AuditRepository(str(tmp_path / "audit.jsonl")),
             traces=TraceWriter(str(tmp_path / "traces.jsonl")),
         )
     )
 
+    error_message = (event.execution_json.get("error") or {}).get("message", "")
+    if event.execution_status == "FAILED" and "Executable doesn't exist" in error_message:
+        pytest.skip("Playwright browser not installed (run `playwright install chromium`)")
+
     assert event.execution_status == "SUCCESS"
-    assert event.execution_json["data"]["snapshot_id"].startswith("snap_")
+    assert event.execution_json["data"]["url"] == page_url
+    assert isinstance(event.execution_json["data"]["snapshot"], list)

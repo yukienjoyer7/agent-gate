@@ -1,93 +1,65 @@
-from app.core.schemas import ActionRequest, ExecutionResult, ExecutionStatus, new_id
+from app.config.settings import get_settings
+from app.core.schemas import ActionRequest, ExecutionResult, ExecutionStatus
+
+# Steps with no action-list equivalent: they just navigate + snapshot.
+_NAVIGATE_ONLY = {"BROWSER_OPEN", "BROWSER_SNAPSHOT"}
 
 
 class BrowserExecutor:
     """
     Single-step browser action executor.
 
-    .. note::
-
-       For **real** Playwright execution (open page, snapshot DOM,
-       resolve selectors, click／type), use the multi-step plan endpoint:
-
-       ``POST /api/v1/chat/plan``   – plan only
-       ``POST /api/v1/chat/execute`` – plan + execute through
-       :func:`app.domains.agent.services.browser_prototype_agent.run_browser_prototype_agent`
-
-       This executor provides mock responses for development and
-       testing.  Interactive actions (click, type, …) require the
-       multi-step flow because they need:
-
-       - A live Playwright session
-       - A snapshot + selector-map built from the real DOM
-       - Element resolution by label／role against the snapshot
-       - Sequential execution in a single browser context
+    Drives the same Playwright pipeline as the multi-step plan endpoint
+    (``POST /api/v1/chat/execute`` -> ``run_browser_prototype_agent``), just
+    for a single :class:`ActionRequest`. Calls the pipeline's inner
+    ``_execute_with_browser`` directly rather than the full agent function,
+    since guardrail decision + audit write already happened one level up
+    (``ExecutionRouter`` is invoked from ``run_guarded_action``) and running
+    them again here would double them.
     """
 
     async def execute(self, action: ActionRequest) -> ExecutionResult:
-        if action.action_type == "BROWSER_OPEN":
-            return ExecutionResult(
-                run_id=action.run_id,
-                action_id=action.action_id,
-                executor="browser",
-                status=ExecutionStatus.SUCCESS,
-                result_summary=f"Opened {action.payload.get('url', action.target)}",
-                data={"url": action.payload.get("url", action.target)},
-            )
+        # Local import: app.domains.agent.services.__init__ pulls in
+        # guarded_execution -> app.executors, so a module-level import here
+        # would be circular.
+        from app.domains.agent.services.browser_prototype_agent import (
+            BROWSER_ACTION_TYPE_MAP,
+            _error_payload,
+            _execute_with_browser,
+            plan_step_to_browser_action,
+        )
 
-        if action.action_type == "BROWSER_SNAPSHOT":
-            snapshot_id = new_id("snap")
-            return ExecutionResult(
-                run_id=action.run_id,
-                action_id=action.action_id,
-                executor="browser",
-                status=ExecutionStatus.SUCCESS,
-                result_summary="Created mock browser snapshot",
-                data={
-                    "snapshot_id": snapshot_id,
-                    "url": action.payload.get("url", action.target),
-                    "title": action.payload.get("title", "Demo page"),
-                    "elements": [
-                        {
-                            "snapshot_id": snapshot_id,
-                            "element_id": "e_001",
-                            "role": "button",
-                            "label": "Continue",
-                            "text": "Continue",
-                            "risk_hint": "unknown",
-                        }
-                    ],
-                },
-            )
+        url = action.payload.get("url") or action.target
+        if not url or not isinstance(url, str):
+            return self._failed(action, "missing browser target url")
 
-        if action.action_type in (
-            "BROWSER_CLICK",
-            "BROWSER_TYPE",
-            "BROWSER_SELECT",
-            "BROWSER_SUBMIT",
-            "BROWSER_SCREENSHOT",
-            "BROWSER_SCROLL",
-        ):
-            return ExecutionResult(
-                run_id=action.run_id,
-                action_id=action.action_id,
-                executor="browser",
-                status=ExecutionStatus.SKIPPED,
-                result_summary=(
-                    f"Interactive browser action ({action.action_type}) requires a real "
-                    f"Playwright session. Use POST /api/v1/chat/execute with the "
-                    f"multi-step plan endpoint."
-                ),
-                data={
-                    "action_type": action.action_type,
-                    "hint": "use POST /api/v1/chat/execute for real browser execution",
-                },
-            )
+        if action.action_type not in _NAVIGATE_ONLY and action.action_type not in BROWSER_ACTION_TYPE_MAP:
+            return self._failed(action, f"unsupported browser action: {action.action_type}")
 
+        browser_action = plan_step_to_browser_action(
+            {"action_type": action.action_type, "payload": action.payload}
+        )
+        settings = get_settings()
+
+        try:
+            return await _execute_with_browser(
+                request=action,
+                url=url,
+                actions=[browser_action] if browser_action else [],
+                timeout_ms=action.payload.get("timeout_ms", 15_000),
+                wait_until=action.payload.get("wait_until", "domcontentloaded"),
+                settle_ms=action.payload.get("settle_ms", settings.BROWSER_SETTLE_MS),
+            )
+        except Exception as exc:
+            return self._failed(action, "browser action failed", error=_error_payload(exc))
+
+    @staticmethod
+    def _failed(action: ActionRequest, summary: str, error: dict | None = None) -> ExecutionResult:
         return ExecutionResult(
             run_id=action.run_id,
             action_id=action.action_id,
             executor="browser",
             status=ExecutionStatus.FAILED,
-            result_summary=f"unsupported browser action: {action.action_type}",
+            result_summary=summary,
+            error=error or {"code": "INVALID_BROWSER_ACTION", "message": summary},
         )

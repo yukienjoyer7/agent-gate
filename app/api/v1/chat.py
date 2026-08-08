@@ -254,41 +254,7 @@ def _find_url(steps: list[dict[str, Any]]) -> str | None:
 
 def _plan_to_browser_actions(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert a plan into the action format expected by ``run_browser_prototype_agent``."""
-    TYPE_MAP = {
-        "BROWSER_CLICK": "click",
-        "BROWSER_TYPE": "fill",
-        "BROWSER_SCROLL": "scroll",
-        "BROWSER_SCREENSHOT": "screenshot",
-        # Submit maps to Enter-press so search/forms actually execute instead
-        # of merely focusing the element (clicking an input does nothing).
-        "BROWSER_SUBMIT": "submit",
-        "BROWSER_SELECT": "click",
-    }
+    from app.domains.agent.services.browser_prototype_agent import plan_step_to_browser_action
 
-    actions: list[dict[str, Any]] = []
-    for step in steps:
-        at = step["action_type"]
-        if at == "BROWSER_OPEN":
-            continue
-        browser_type = TYPE_MAP.get(at)
-        if not browser_type:
-            continue
-        payload = step.get("payload", {})
-        payload = payload if isinstance(payload, dict) else {}
-        action: dict[str, Any] = {"type": browser_type}
-        for key in ("label", "element_id", "role"):
-            if payload.get(key):
-                action[key] = payload[key]
-
-        value = payload.get("value") or payload.get("query") or payload.get("text")
-        if value:
-            action["value"] = value
-
-        for key in ("delay_ms", "duration_ms", "x", "y", "path", "full_page"):
-            if key in payload:
-                action[key] = payload[key]
-            elif key in step:
-                action[key] = step[key]
-        actions.append(action)
-
-    return actions
+    actions = [plan_step_to_browser_action(step) for step in steps]
+    return [action for action in actions if action]
