@@ -133,13 +133,19 @@ async def _request_token(
 
     if client is not None:
         response = await client.post(config.token_url, data=data, headers=headers)
-        response.raise_for_status()
-        payload = response.json()
     else:
         async with httpx.AsyncClient(timeout=10) as owned_client:
             response = await owned_client.post(config.token_url, data=data, headers=headers)
-            response.raise_for_status()
-            payload = response.json()
+
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        # Surface as a 400 with the provider's own message instead of a bare
+        # 500 -- expired/reused code, bad client secret, redirect_uri
+        # mismatch all land here.
+        raise ValueError(f"{provider} token exchange failed: {response.text}") from exc
+
+    payload = response.json()
 
     if "error" in payload:
         raise ValueError(payload.get("error_description", payload["error"]))

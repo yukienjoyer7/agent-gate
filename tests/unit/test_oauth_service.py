@@ -102,6 +102,25 @@ def test_get_access_token_refreshes_expired_token():
     assert asyncio.run(run()) == "at2"
 
 
+def test_exchange_code_raises_value_error_on_provider_error_response():
+    """A non-2xx from the provider's token endpoint (expired/reused code,
+    bad secret, ...) must surface as a ValueError -> 400, not an uncaught
+    httpx.HTTPStatusError -> 500."""
+    service._pending_states["state-2"] = "github"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "bad_verification_code"})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await service.exchange_code(
+                "github", "stale-code", "state-2", repo=FakeRepo(), client=client
+            )
+
+    with pytest.raises(ValueError):
+        asyncio.run(run())
+
+
 def test_get_access_token_falls_back_to_static_settings(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "static-pat")
     get_settings.cache_clear()
