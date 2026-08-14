@@ -26,6 +26,7 @@ from typing import Any
 from playwright.async_api import async_playwright
 
 from app.config.settings import get_settings
+from app.domains.browser.browser_profile import DEFAULT_EXTRA_HEADERS, user_agent
 from app.domains.browser.selector_map.domInspector import build_execution_metadata
 from app.domains.browser.snapshot.snapshotBuilder import (
     build_semantic_elements,
@@ -34,53 +35,59 @@ from app.domains.browser.snapshot.snapshotBuilder import (
 
 TOOL_NAME = "get_accessibility_tree"
 
-TOOL_DEFINITION: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": TOOL_NAME,
-        "description": (
-            "Open the given URL in a headless browser and return the page's "
-            "accessibility tree: interactive elements with their exact ARIA role, "
-            "accessible label, and DOM attributes (name, placeholder, aria-label, "
-            "id, data-testid, text). Use this BEFORE emitting BROWSER_CLICK, "
-            "BROWSER_TYPE, BROWSER_SCROLL or BROWSER_SELECT steps so the label/role "
-            "you put in the plan payload match the real page exactly."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "Full URL of the page to inspect (e.g. https://example.com).",
-                },
-                "wait_until": {
-                    "type": "string",
-                    "enum": ["domcontentloaded", "load", "networkidle"],
-                    "default": "domcontentloaded",
-                    "description": "Playwright navigation wait condition.",
-                },
-                "timeout_ms": {
-                    "type": "integer",
-                    "default": 15000,
-                    "description": "Navigation timeout in milliseconds.",
-                },
-            },
-            "required": ["url"],
-        },
-    },
-}
 
-_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+def _tool_definition() -> dict[str, Any]:
+    """Build the tool schema; navigation defaults come from settings so an env
+    override (BROWSER_WAIT_UNTIL / BROWSER_TIMEOUT_MS) reaches the model too."""
+    settings = get_settings()
+    return {
+        "type": "function",
+        "function": {
+            "name": TOOL_NAME,
+            "description": (
+                "Open the given URL in a headless browser and return the page's "
+                "accessibility tree: interactive elements with their exact ARIA role, "
+                "accessible label, and DOM attributes (name, placeholder, aria-label, "
+                "id, data-testid, text). Use this BEFORE emitting BROWSER_CLICK, "
+                "BROWSER_TYPE, BROWSER_SCROLL or BROWSER_SELECT steps so the label/role "
+                "you put in the plan payload match the real page exactly."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full URL of the page to inspect (e.g. https://example.com).",
+                    },
+                    "wait_until": {
+                        "type": "string",
+                        "enum": ["domcontentloaded", "load", "networkidle"],
+                        "default": settings.BROWSER_WAIT_UNTIL,
+                        "description": "Playwright navigation wait condition.",
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "default": settings.BROWSER_TIMEOUT_MS,
+                        "description": "Navigation timeout in milliseconds.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    }
+
+
+# Import-time snapshot of the settings-backed defaults (env changes after
+# import, e.g. tests clearing the settings cache, won't re-render this schema
+# — acceptable since the values are informational defaults for the model).
+TOOL_DEFINITION: dict[str, Any] = _tool_definition()
 
 
 async def get_accessibility_tree(
     *,
     url: str,
-    wait_until: str = "domcontentloaded",
-    timeout_ms: int = 15_000,
+    wait_until: str | None = None,
+    timeout_ms: int | None = None,
 ) -> dict[str, Any]:
     """Fetch the accessibility tree of ``url`` as a JSON-safe dict.
 
@@ -88,6 +95,11 @@ async def get_accessibility_tree(
     labels/roles. Never raises: errors are converted into an ``error`` dict
     that the model can react to.
     """
+    settings = get_settings()
+    if wait_until is None:
+        wait_until = settings.BROWSER_WAIT_UNTIL
+    if timeout_ms is None:
+        timeout_ms = settings.BROWSER_TIMEOUT_MS
     try:
         return await _fetch_tree(url, wait_until=wait_until, timeout_ms=timeout_ms)
     except Exception as exc:  # noqa: BLE001 - errors are fed back to the model
@@ -112,18 +124,8 @@ async def _fetch_tree(
         )
         try:
             page = await browser.new_page(
-                user_agent=_UA,
-                extra_http_headers={
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Accept": (
-                        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                        "image/avif,image/webp,*/*;q=0.8"
-                    ),
-                    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-                    "sec-ch-ua-mobile": "?0",
-                    "sec-ch-ua-platform": '"Windows"',
-                    "Upgrade-Insecure-Requests": "1",
-                },
+                user_agent=user_agent(),
+                extra_http_headers=DEFAULT_EXTRA_HEADERS,
             )
             await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
             # Align with the executor (which settles BROWSER_SETTLE_MS before

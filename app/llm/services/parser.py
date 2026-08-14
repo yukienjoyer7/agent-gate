@@ -1,27 +1,21 @@
 """
-LLM-backed natural-language → action plan parser (OpenRouter).
+LLM-backed natural-language → action plan parser.
 
-Replaces the original rule-based parser, which was moved to
-:mod:`app.llm.services.parse_old` (``parse_old.py``). The new parser sends
-the user prompt to **OpenRouter** (model ``openrouter/free`` by default,
-configurable via ``OPENROUTER_MODEL``) and asks the model to return a JSON
-action plan whose steps are compatible with
-:func:`app.core.action_request.build_action_request`.
+The original rule-based parser (``parse_old.py``) has been removed; the
+planner now always goes through the configured LLM provider (see
+``LLM_MODEL`` / ``LLM_TYPE`` in settings).
 
 Behaviour contract
 ------------------
-The public functions keep the **same return shapes** as the rule-based
-parser, so callers (``app/api/v1/chat.py``, tests) work unchanged:
+The public functions keep the **same return shapes** as before, so callers
+(``app/api/v1/chat.py``, ``app/domains/agent/services/agent_loop.py``,
+tests) work unchanged:
 
 - ``parse_prompt(prompt)`` → ``{"parsed", "llm_provider", "raw_prompt", "human_readable"}``
 - ``parse_prompt_plan(prompt)`` → ``{"plan", "llm_provider", "raw_prompt", "human_readable"}``
 
-Fallback
---------
-If ``OPENROUTER_API_KEY`` is not configured, the LLM call fails, or the
-model returns an unparseable/invalid plan, the functions **fall back to the
-rule-based parser** (``parse_old``) so the application keeps working in
-environments without an LLM key.
+Errors (missing ``LLM_API_KEY``, unparseable model output) propagate to the
+caller — the reactive agent loop surfaces them as a run ``error`` event.
 """
 
 from __future__ import annotations
@@ -31,22 +25,15 @@ import logging
 import re
 from typing import Any
 
-import httpx
-
 from app.config.settings import get_settings
 from app.core.browser_schema import BrowserElement
-from app.llm.services.parse_old import _classify_prompt_risk
+from app.llm.services.client import post_chat
 from app.llm.tools import TOOL_DEFINITIONS, execute_tool
-from app.llm.services.parse_old import parse_prompt as _rule_parse_prompt
-from app.llm.services.parse_old import parse_prompt_plan as _rule_parse_prompt_plan
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_URL = "https://omni.noctican.my.id/v1/chat/completions"
-DEFAULT_MODEL = "nvidia/oc/deepseek-v4-flash-free"
-
 # Aliases free models commonly return instead of the canonical action_type.
-# ``action`` → ``action_type`` mapping mirrors parse_old's ACTION_KEYWORDS.
+# ``action`` → ``action_type`` mapping.
 ACTION_ALIASES: dict[str, str] = {
     "navigate": "BROWSER_OPEN",
     "navigate_to": "BROWSER_OPEN",
@@ -74,90 +61,106 @@ ACTION_ALIASES: dict[str, str] = {
     "read_file": "FILE_READ",
 }
 
-ALLOWED_ACTION_TYPES = {
-    "BROWSER_OPEN",
-    "BROWSER_CLICK",
-    "BROWSER_TYPE",
-    "BROWSER_SCROLL",
-    "BROWSER_SCREENSHOT",
-    "BROWSER_SUBMIT",
-    "BROWSER_SELECT",
-    "API_CALL",
-    "FILE_READ",
-}
-ALLOWED_TARGET_SYSTEMS = {"browser", "gmail", "github", "local_file", "stripe"}
-ALLOWED_DOMAINS = {"browser", "productivity", "code_protection", "booking", "filesystem"}
-ALLOWED_RISK_HINTS = {
-    "unknown",
-    "external_send",
-    "file_read",
-    "destructive",
-    "unauthorized",
-    "data_exfiltration",
-    "payment",
-    "refund",
-    "bulk_action",
-}
-INTERACTIVE_BROWSER_ACTIONS = {
-    "BROWSER_CLICK",
-    "BROWSER_TYPE",
-    "BROWSER_SCROLL",
-    "BROWSER_SCREENSHOT",
-    "BROWSER_SUBMIT",
-    "BROWSER_SELECT",
-}
 
 # Actions that resolve page elements by label/role — exactly the ones the
-# accessibility-tree tool exists to support (scroll/screenshot may be page-level).
-_ELEMENT_INTERACTION_ACTIONS = {
-    "BROWSER_CLICK",
-    "BROWSER_TYPE",
-    "BROWSER_SELECT",
-    "BROWSER_SUBMIT",
-}
+# accessibility-tree tool exists to support. Derived from
+# INTERACTIVE_BROWSER_ACTIONS minus the page-level actions (scroll/screenshot).
+# Set only once per process; safe because it reads the same cached settings.
+def _element_interaction_actions() -> set[str]:
+    settings = get_settings()
+    return set(settings.INTERACTIVE_BROWSER_ACTIONS) - {"BROWSER_SCROLL", "BROWSER_SCREENSHOT"}
 
-# Domain fallbacks matching parse_old's DOMAIN_KEYWORDS so an LLM that
-# omits ``domain`` cannot silently downgrade guardrail risk decisions.
-DOMAIN_BY_TARGET_SYSTEM = {
-    "gmail": "productivity",
-    "github": "code_protection",
-    "local_file": "filesystem",
-    "stripe": "booking",
-    "browser": "browser",
-}
 
-SYSTEM_PROMPT = """You are AgentGate's action planner. Convert the user's natural-language \
+# Deterministic prompt-level risk keywords (moved from the removed rule-based
+# parser). Any match overrides the LLM's risk_hint so destructive /
+# unauthorized / data-exfiltration prompts always reach the guardrail as BLOCK
+# regardless of what the model emitted. Ordered longest-phrase-first would be
+# nicer, but the current keywords are all single tokens and match by substring.
+RISK_KEYWORDS: list[tuple[str, str]] = [
+    ("delete", "destructive"),
+    ("remove", "destructive"),
+    ("destroy", "destructive"),
+    ("erase", "destructive"),
+    ("wipe", "destructive"),
+    ("purge", "destructive"),
+    ("drop", "destructive"),
+    ("kill", "destructive"),
+    ("terminate", "destructive"),
+    ("shutdown", "destructive"),
+    ("unauthorized", "unauthorized"),
+    ("bypass", "unauthorized"),
+    ("hack", "unauthorized"),
+    ("exfiltrate", "data_exfiltration"),
+    ("steal", "data_exfiltration"),
+    ("leak", "data_exfiltration"),
+]
+
+
+def _classify_prompt_risk(prompt_lower: str) -> str | None:
+    """
+    Return the first risk_hint matched by prompt keywords, or None.
+
+    This is checked **before** per-step normalization, so destructive actions
+    are always caught regardless of domain.
+    """
+    for keyword, risk_hint in RISK_KEYWORDS:
+        if keyword in prompt_lower:
+            return risk_hint
+    return None
+
+
+def _rules() -> dict[str, Any]:
+    """Planner validation rules, sourced from config (single source of truth;
+    see ``app.config.settings`` — overridable via env)."""
+    settings = get_settings()
+    return {
+        "action_types": set(settings.ALLOWED_ACTION_TYPES),
+        "target_systems": set(settings.ALLOWED_TARGET_SYSTEMS),
+        "domains": set(settings.ALLOWED_DOMAINS),
+        "risk_hints": set(settings.ALLOWED_RISK_HINTS),
+        "interactive_actions": set(settings.INTERACTIVE_BROWSER_ACTIONS),
+        "domain_by_target_system": settings.DOMAIN_BY_TARGET_SYSTEM,
+    }
+
+
+def _base_system_prompt() -> str:
+    """Base planner prompt; the allowed value lists are injected from config
+    (settings.ALLOWED_*) so an env override reaches the model automatically.
+    Keeps the settings list order (BROWSER_OPEN first, etc.)."""
+    settings = get_settings()
+    return f"""You are AgentGate's action planner. Convert the user's natural-language \
 instruction into a JSON action plan.
 
 Return ONLY valid JSON (no markdown fences, no commentary) with this exact shape:
-{
+{{
   "plan": [
-    {
+    {{
       "source": "chat",
       "domain": "<domain>",
       "action_type": "<ACTION_TYPE>",
       "target_system": "<TARGET_SYSTEM>",
       "target": "<url or identifier>",
       "risk_hint": "<risk_hint>",
-      "payload": { ... }
-    }
+      "payload": {{ ... }}
+    }}
   ],
   "summary": "<one-line human readable summary>"
-}
+}}
 
 Rules:
-- action_type must be one of: BROWSER_OPEN, BROWSER_CLICK, BROWSER_TYPE, BROWSER_SCROLL, BROWSER_SCREENSHOT, BROWSER_SUBMIT, BROWSER_SELECT, API_CALL, FILE_READ.
-- For browser interactions that navigate to a page, ALWAYS emit a first step BROWSER_OPEN with payload {"url": "..."} followed by the actual action step.
-- target_system must be one of: browser, gmail, github, local_file, stripe.
-- domain must be one of: browser, productivity, code_protection, booking, filesystem.
-- risk_hint must be one of: unknown, external_send, file_read, destructive, unauthorized, data_exfiltration, payment, refund, bulk_action.
-- payload for browser click/type: {"url": "...", "action_type": "...", "element_id": "<slug>", "label": "<human label>", "role": "<aria role>", "value": "<text to type if any>"}
-- payload for gmail: {"action": "send"|"read"|"archive", "to": "...", "body": "...", "query": "..."}
-- payload for github: {"action": "repo_metadata", "owner": "...", "repo": "..."}
-- payload for local_file: {"action": "read", "path": "..."}
+- action_type must be one of: {', '.join(settings.ALLOWED_ACTION_TYPES)}.
+- For browser interactions that navigate to a page, ALWAYS emit a first step BROWSER_OPEN with payload {{"url": "..."}} followed by the actual action step.
+- target_system must be one of: {', '.join(settings.ALLOWED_TARGET_SYSTEMS)}.
+- domain must be one of: {', '.join(settings.ALLOWED_DOMAINS)}.
+- risk_hint must be one of: {', '.join(settings.ALLOWED_RISK_HINTS)}.
+- payload for browser click/type: {{"url": "...", "action_type": "...", "element_id": "<slug>", "label": "<human label>", "role": "<aria role>", "value": "<text to type if any>"}}
+- payload for gmail: {{"action": "send"|"read"|"archive", "to": "...", "body": "...", "query": "..."}}
+- payload for github: {{"action": "repo_metadata", "owner": "...", "repo": "..."}}
+- payload for local_file: {{"action": "read", "path": "..."}}
 - target: full URL for browser, recipient address for gmail, owner/repo for github, file path for local_file.
 - Always prepend https:// to bare domains.
 - Keep the plan as short as the instruction requires (single API_CALL/FILE_READ step for connectors)."""
+
 
 TOOLS_SYSTEM_PROMPT = """
 
@@ -186,63 +189,57 @@ Element interaction rules
 def _system_prompt() -> str:
     """Full system prompt; tools section only when function calling is enabled."""
     if get_settings().LLM_TOOLS_ENABLED:
-        return SYSTEM_PROMPT + TOOLS_SYSTEM_PROMPT
-    return SYSTEM_PROMPT
+        return _base_system_prompt() + TOOLS_SYSTEM_PROMPT
+    return _base_system_prompt()
 
 
-# ── Public API (async, LLM-backed with rule-based fallback) ─────────
+# ── Public API (async, LLM-backed) ──────────────────────────────
 
 
 async def parse_prompt(prompt: str) -> dict[str, Any]:
     """
-    Parse a natural-language instruction into ActionRequest fields via OpenRouter.
+    Parse a natural-language instruction into ActionRequest fields via the LLM.
 
-    Falls back to the rule-based parser (``parse_old``) on any failure.
+    Raises on any failure (missing ``LLM_API_KEY``, bad model output); the
+    agent loop surfaces the error as a run ``error`` event.
     """
-    try:
-        steps = (await _llm_plan(prompt))["plan"]
-        parsed = _primary_step(steps)
-        return {
-            "parsed": parsed,
-            "llm_provider": _provider_name(),
-            "raw_prompt": prompt,
-            "human_readable": _describe_steps(steps),
-        }
-    except Exception as exc:  # noqa: BLE001 - intentional fallback to rule-based parser
-        logger.warning("OpenRouter parsing failed (%s); using rule-based parser", exc)
-        return _rule_parse_prompt(prompt)
+    steps = (await _llm_plan(prompt))["plan"]
+    parsed = _primary_step(steps)
+    return {
+        "parsed": parsed,
+        "llm_provider": _provider_name(),
+        "raw_prompt": prompt,
+        "human_readable": _describe_steps(steps),
+    }
 
 
 async def parse_prompt_plan(prompt: str) -> dict[str, Any]:
     """
-    Parse a natural-language instruction into a **multi-step plan** via OpenRouter.
+    Parse a natural-language instruction into a **multi-step plan** via the LLM.
 
-    Falls back to the rule-based parser (``parse_old``) on any failure.
+    Raises on any failure (missing ``LLM_API_KEY``, bad model output); the
+    agent loop surfaces the error as a run ``error`` event.
     """
-    try:
-        steps = (await _llm_plan(prompt))["plan"]
-        return {
-            "plan": steps,
-            "llm_provider": _provider_name(),
-            "raw_prompt": prompt,
-            "human_readable": _describe_steps(steps),
-        }
-    except Exception as exc:  # noqa: BLE001 - intentional fallback to rule-based parser
-        logger.warning("OpenRouter planning failed (%s); using rule-based parser", exc)
-        return _rule_parse_prompt_plan(prompt)
+    steps = (await _llm_plan(prompt))["plan"]
+    return {
+        "plan": steps,
+        "llm_provider": _provider_name(),
+        "raw_prompt": prompt,
+        "human_readable": _describe_steps(steps),
+    }
 
 
 # ── OpenRouter call ──────────────────────────────────────────────────
 
 
 def _provider_name() -> str:
-    """Return the configured OpenRouter model id (for ``llm_provider``)."""
-    return get_settings().OPENROUTER_MODEL or DEFAULT_MODEL
+    """Return the configured LLM model id (for ``llm_provider``)."""
+    return get_settings().LLM_MODEL
 
 
 async def _llm_plan(prompt: str) -> dict[str, Any]:
     """
-    Call OpenRouter chat completions and return a normalized plan dict.
+    Call the configured LLM provider and return a normalized plan dict.
 
     Uses function calling: when the model requests ``get_accessibility_tree``,
     the tool is executed and its result is fed back into the conversation so
@@ -250,11 +247,11 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
     instead of guessed ones.
     """
     settings = get_settings()
-    api_key = settings.OPENROUTER_API_KEY
+    api_key = settings.LLM_API_KEY
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY is not configured")
+        raise RuntimeError("LLM_API_KEY is not configured")
 
-    model = settings.OPENROUTER_MODEL or DEFAULT_MODEL
+    model = settings.LLM_MODEL
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": _system_prompt()},
@@ -325,9 +322,7 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
             settings.LLM_TOOLS_ENABLED
             and not tools_used
             and not tools_rejected
-            and any(
-                step.get("action_type") in _ELEMENT_INTERACTION_ACTIONS for step in steps
-            )
+            and any(step.get("action_type") in _element_interaction_actions() for step in steps)
         ):
             logger.warning(
                 "Browser element plan emitted without a tool call (labels may be guessed)",
@@ -348,52 +343,14 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
 
 
 async def _post_chat(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """POST to OpenRouter; retries once without ``tools`` if rejected (400).
+    """POST to the configured LLM provider (delegates to the shared client).
 
-    Some free models do not support the ``tools`` parameter. Falling back to a
-    tool-less request keeps planning working while allowing models that DO
-    support function calling to inspect the accessibility tree.
-
-    Returns ``(data, tools_rejected)`` where ``tools_rejected`` is True when the
-    router rejected the ``tools`` parameter and the request was retried without
-    it (the model never had a chance to call a tool).
+    For the openai type, retries once without ``tools`` if the router rejects
+    them (400), passing the tool-less base prompt so the model is not told to
+    call a tool that no longer exists. Returns ``(data, tools_rejected)`` —
+    see :func:`app.llm.services.client.post_chat`.
     """
-    settings = get_settings()
-    headers = {
-        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://freebuff.com",
-        "X-Title": "AgentGate",
-    }
-
-    async with httpx.AsyncClient(timeout=httpx.Timeout(settings.OPENROUTER_TIMEOUT)) as client:
-        response = await client.post(OPENROUTER_URL, json=payload, headers=headers)
-        # Retry once without ``tools`` only when the router explicitly rejects the
-        # tools parameter (some free models do not support function calling).
-        error_text = getattr(response, "text", "") or ""
-        if (
-            getattr(response, "status_code", None) == 400
-            and payload.get("tools")
-            and ("tool" in error_text.lower() or "function" in error_text.lower())
-        ):
-            logger.warning(
-                "OpenRouter rejected tools parameter (400); retrying without tools"
-            )
-            fallback = dict(payload)
-            fallback.pop("tools", None)
-            # Deep-copy messages so the caller's prompt is not mutated.
-            fallback["messages"] = [dict(message) for message in (payload.get("messages") or [])]
-            # The tool-less model must not be told to call a tool that does not
-            # exist in its payload; swap back to the base (tool-less) prompt and
-            # re-enable JSON mode now that no tools are offered.
-            if fallback["messages"]:
-                fallback["messages"][0]["content"] = SYSTEM_PROMPT
-            fallback["response_format"] = {"type": "json_object"}
-            response = await client.post(OPENROUTER_URL, json=fallback, headers=headers)
-            response.raise_for_status()
-            return response.json(), True
-        response.raise_for_status()
-        return response.json(), False
+    return await post_chat(payload, fallback_system_prompt=_base_system_prompt())
 
 
 def _extract_message(data: dict[str, Any]) -> dict[str, Any]:
@@ -456,27 +413,30 @@ def _extract_json(content: str | None) -> dict[str, Any]:
 
 def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
     """Coerce an LLM step into the canonical step schema (or None if unusable)."""
+    rules = _rules()
     action_type = str(step.get("action_type") or "").upper()
-    if action_type not in ALLOWED_ACTION_TYPES:
+    if action_type not in rules["action_types"]:
         # Free models sometimes use ``action``/lowercase aliases instead of
         # the canonical action_type. Map them before rejecting the step.
-        action_type = ACTION_ALIASES.get(str(step.get("action") or "").lower()) or ACTION_ALIASES.get(
-            action_type.lower()
-        )
+        action_type = ACTION_ALIASES.get(
+            str(step.get("action") or "").lower()
+        ) or ACTION_ALIASES.get(action_type.lower())
     target_system = str(step.get("target_system") or "browser").lower()
 
-    if action_type not in ALLOWED_ACTION_TYPES:
+    if action_type not in rules["action_types"]:
         return None
 
     payload = step.get("payload")
     payload = payload if isinstance(payload, dict) else {}
 
-    # Derive the domain from target_system when the LLM omits it, mirroring
-    # parse_old's DOMAIN_KEYWORDS so guardrail risk levels stay correct.
-    domain = str(step.get("domain") or DOMAIN_BY_TARGET_SYSTEM.get(target_system, "browser")).lower()
+    # Derive the domain from target_system when the LLM omits it, so guardrail
+    # risk levels stay correct (mirrors settings.DOMAIN_BY_TARGET_SYSTEM).
+    domain = str(
+        step.get("domain") or rules["domain_by_target_system"].get(target_system, "browser")
+    ).lower()
 
     risk_hint = str(step.get("risk_hint") or "").lower()
-    if risk_hint not in ALLOWED_RISK_HINTS:
+    if risk_hint not in rules["risk_hints"]:
         risk_hint = _derive_risk_hint(action_type, target_system, payload)
 
     target = (
@@ -498,9 +458,9 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
 
     normalized: dict[str, Any] = {
         "source": "chat",
-        "domain": domain if domain in ALLOWED_DOMAINS else "browser",
+        "domain": domain if domain in rules["domains"] else "browser",
         "action_type": action_type,
-        "target_system": target_system if target_system in ALLOWED_TARGET_SYSTEMS else "browser",
+        "target_system": target_system if target_system in rules["target_systems"] else "browser",
         "target": target,
         "risk_hint": risk_hint,
         "payload": payload,
@@ -508,7 +468,7 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
 
     # Mirror the rule-based parser: attach a BrowserElement when we have a label.
     label = payload.get("label")
-    if action_type in INTERACTIVE_BROWSER_ACTIONS and label:
+    if action_type in rules["interactive_actions"] and label:
         try:
             element = BrowserElement(
                 snapshot_id="",
@@ -525,12 +485,12 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _derive_risk_hint(action_type: str, target_system: str, payload: dict[str, Any]) -> str:
-    """Best-effort risk hint derivation matching parse_old defaults."""
+    """Best-effort risk hint derivation when the LLM omits risk_hint."""
     if action_type == "FILE_READ" or target_system == "local_file":
         return "file_read"
     if target_system == "gmail" and payload.get("action") == "send":
         return "external_send"
-    # parse_old guaranteed NEED_APPROVAL (external_send) for form submits.
+    # Form submits with a label are treated as external_send (NEED_APPROVAL).
     if action_type in ("BROWSER_SUBMIT", "BROWSER_SELECT") and payload.get("label"):
         return "external_send"
     return "unknown"
@@ -563,11 +523,10 @@ def _ensure_open_step(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _apply_prompt_risk(steps: list[dict[str, Any]], prompt: str) -> list[dict[str, Any]]:
     """
-    Deterministic safety net: re-run parse_old's prompt-level risk keyword
-    detection on the raw prompt and override ``risk_hint`` on every step.
-
-    Mirrors parse_old's guarantee that destructive/unauthorized/data_exfiltration
-    keywords always set a BLOCK hint, regardless of what the LLM emitted.
+    Deterministic safety net: re-run the prompt-level risk keyword detection
+    (:data:`RISK_KEYWORDS`) on the raw prompt and override ``risk_hint`` on
+    every step, so destructive/unauthorized/data_exfiltration keywords always
+    set a BLOCK hint regardless of what the LLM emitted.
     """
     prompt_risk = _classify_prompt_risk(prompt.lower().strip())
     if not prompt_risk:
@@ -592,6 +551,8 @@ def _describe_steps(steps: list[dict[str, Any]]) -> str:
         target = step.get("target") or ""
         label = (step.get("payload") or {}).get("label") or ""
         action = step.get("action_type", "").replace("BROWSER_", "").title()
-        description = action + (f' "{label}"' if label else "") + (f" on {target}" if target else "")
+        description = (
+            action + (f' "{label}"' if label else "") + (f" on {target}" if target else "")
+        )
         lines.append(f"  {index}. {description}")
     return "\n" + "\n".join(lines)

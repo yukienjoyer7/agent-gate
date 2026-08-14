@@ -3,6 +3,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from app.config.settings import get_settings
 from app.domains.agent.services import run_guarded_action
 from app.domains.agent.services.browser_prototype_agent import run_browser_prototype_agent
 from app.domains.audit.repositories import get_audit_repository
@@ -34,8 +35,12 @@ class BrowserPrototypeRequest(BaseModel):
         ],
     )
     risk_hint: str = "unknown"
-    timeout_ms: int = Field(default=15_000, ge=1_000, le=60_000)
-    wait_until: Literal["commit", "domcontentloaded", "load", "networkidle"] = "domcontentloaded"
+    timeout_ms: int = Field(
+        default_factory=lambda: get_settings().BROWSER_TIMEOUT_MS, ge=1_000, le=60_000
+    )
+    wait_until: Literal["commit", "domcontentloaded", "load", "networkidle"] = Field(
+        default_factory=lambda: get_settings().BROWSER_WAIT_UNTIL
+    )
 
     @model_validator(mode="after")
     def require_one_action_shape(self) -> "BrowserPrototypeRequest":

@@ -10,8 +10,16 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from app.config.settings import get_settings
-from app.core.schemas import ActionRequest, AuditEvent, Decision, ExecutionResult, ExecutionStatus
+from app.core.schemas import (
+    ActionRequest,
+    AuditEvent,
+    Decision,
+    DecisionResponse,
+    ExecutionResult,
+    ExecutionStatus,
+)
 from app.domains.audit.repositories.audit_repository_db import AuditRepositoryDB
+from app.domains.browser.browser_profile import DEFAULT_EXTRA_HEADERS, user_agent
 from app.domains.browser.executor import execute_action
 from app.domains.browser.selector_map.domInspector import build_execution_metadata
 from app.domains.browser.selector_map.locatorGenerator import build_locator_candidates
@@ -21,7 +29,7 @@ from app.domains.browser.snapshot.snapshotBuilder import (
     build_semantic_elements,
     enrich_semantic_elements,
 )
-from app.domains.guardrail.decision import decide
+from app.domains.guardrail.decision import adecide
 
 SUPPORTED_BROWSER_ACTIONS = {"click", "fill", "submit", "scroll", "screenshot"}
 
@@ -83,22 +91,38 @@ async def run_browser_prototype_agent(
     actions: list[dict[str, Any]] | None = None,
     user_goal: str = "run browser prototype action",
     risk_hint: str = "unknown",
-    timeout_ms: int = 15_000,
-    wait_until: str = "domcontentloaded",
+    timeout_ms: int | None = None,
+    wait_until: str | None = None,
     settle_ms: int = 0,
+    run_id: str | None = None,
+    action_id: str | None = None,
+    skip_guardrail: bool = False,
 ) -> AuditEvent:
     """
     Browser prototype agent:
-    1. Create an auditable ActionRequest.
-    2. Let the existing guardrail decision run.
+    1. Create an auditable ActionRequest (run/action ids inherited from the
+       caller when provided, so audit events group under the same run).
+    2. Let the existing guardrail decision run (or skip it when the caller,
+       e.g. the reactive agent loop, already evaluated the steps).
     3. Use the browser-domain snapshot and selector-map pipeline.
     4. Execute optional browser actions through browserExecutor.py.
     5. Persist the complete lifecycle to Postgres audit_logs.
     """
     total_started = perf_counter()
+    settings = get_settings()
+    if timeout_ms is None:
+        timeout_ms = settings.BROWSER_TIMEOUT_MS
+    if wait_until is None:
+        wait_until = settings.BROWSER_WAIT_UNTIL
     browser_actions = _normalize_actions(action=action, actions=actions)
     legacy_action = browser_actions[0] if len(browser_actions) == 1 else {}
+    request_kwargs: dict[str, Any] = {}
+    if run_id:
+        request_kwargs["run_id"] = run_id
+    if action_id:
+        request_kwargs["action_id"] = action_id
     request = ActionRequest(
+        **request_kwargs,
         source="api",
         domain="browser",
         action_type="BROWSER_PROTOTYPE_ACTION",
@@ -116,7 +140,15 @@ async def run_browser_prototype_agent(
         risk_hint=risk_hint,
     )
 
-    decision = decide(request)
+    if skip_guardrail:
+        decision = DecisionResponse(
+            run_id=request.run_id,
+            action_id=request.action_id,
+            decision=Decision.ALLOW,
+            reasons=["guardrail skipped (steps pre-checked by the agent loop)"],
+        )
+    else:
+        decision = await adecide(request)
 
     if decision.decision != Decision.ALLOW:
         execution = _skipped_execution(request, decision)
@@ -166,21 +198,8 @@ async def _execute_with_browser(
         )
         try:
             page = await browser.new_page(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                ),
-                extra_http_headers={
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Accept": (
-                        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                        "image/avif,image/webp,*/*;q=0.8"
-                    ),
-                    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-                    "sec-ch-ua-mobile": "?0",
-                    "sec-ch-ua-platform": '"Windows"',
-                    "Upgrade-Insecure-Requests": "1",
-                },
+                user_agent=user_agent(),
+                extra_http_headers=DEFAULT_EXTRA_HEADERS,
             )
             await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
             if settle_ms:
@@ -433,18 +452,14 @@ def _find_element_id(action: dict[str, Any], page_model: BrowserPageModel) -> st
     # match an unrelated element that happens to contain the digit. The label
     # needle stays unconditional (a numeric label like "2024" is legitimate).
     requested_needle = requested_id if requested_id and not requested_id.isdigit() else ""
-    needles = list(
-        dict.fromkeys(n for n in (requested_needle, str(label or "")) if n)
-    )
+    needles = list(dict.fromkeys(n for n in (requested_needle, str(label or "")) if n))
     for needle in needles:
         # Prefer a unique role-consistent DOM match; the page state can differ
         # between the tool call and execution (consent dialogs, localized
         # labels), so fall back to a role-agnostic DOM match — a unique
         # name/id is a strong enough signal on its own.
         role_dom_matches = [
-            element
-            for element in candidates
-            if role_ok(element) and dom_contains(element, needle)
+            element for element in candidates if role_ok(element) and dom_contains(element, needle)
         ]
         if len(role_dom_matches) == 1:
             return role_dom_matches[0]["element_id"]

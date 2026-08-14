@@ -33,7 +33,10 @@ class BrowserExecutor:
         if not url or not isinstance(url, str):
             return self._failed(action, "missing browser target url")
 
-        if action.action_type not in _NAVIGATE_ONLY and action.action_type not in BROWSER_ACTION_TYPE_MAP:
+        if (
+            action.action_type not in _NAVIGATE_ONLY
+            and action.action_type not in BROWSER_ACTION_TYPE_MAP
+        ):
             return self._failed(action, f"unsupported browser action: {action.action_type}")
 
         browser_action = plan_step_to_browser_action(
@@ -46,8 +49,8 @@ class BrowserExecutor:
                 request=action,
                 url=url,
                 actions=[browser_action] if browser_action else [],
-                timeout_ms=action.payload.get("timeout_ms", 15_000),
-                wait_until=action.payload.get("wait_until", "domcontentloaded"),
+                timeout_ms=action.payload.get("timeout_ms", settings.BROWSER_TIMEOUT_MS),
+                wait_until=action.payload.get("wait_until", settings.BROWSER_WAIT_UNTIL),
                 settle_ms=action.payload.get("settle_ms", settings.BROWSER_SETTLE_MS),
             )
         except Exception as exc:

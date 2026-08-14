@@ -14,6 +14,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from playwright.async_api import async_playwright
 
+from app.config.settings import get_settings  # noqa: E402
+from app.domains.browser.browser_profile import DEFAULT_EXTRA_HEADERS, user_agent  # noqa: E402
 from app.domains.browser.selector_map.domInspector import build_execution_metadata
 from app.domains.browser.selector_map.locatorGenerator import build_locator_candidates
 from app.domains.browser.selector_map.locatorRanker import build_selector_map
@@ -42,9 +44,15 @@ async def capture_browser_artifacts(
     url: str,
     output_dir: str | Path,
     headless: bool = True,
-    wait_until: str = "domcontentloaded",
-    timeout_ms: int = 15_000,
+    wait_until: str | None = None,
+    timeout_ms: int | None = None,
 ) -> dict[str, Any]:
+    settings = get_settings()
+    if wait_until is None:
+        wait_until = settings.BROWSER_WAIT_UNTIL
+    if timeout_ms is None:
+        timeout_ms = settings.BROWSER_TIMEOUT_MS
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -55,21 +63,8 @@ async def capture_browser_artifacts(
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=headless)
         page = await browser.new_page(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-            extra_http_headers={
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept": (
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                    "image/avif,image/webp,*/*;q=0.8"
-                ),
-                "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": '"Windows"',
-                "Upgrade-Insecure-Requests": "1",
-            },
+            user_agent=user_agent(),
+            extra_http_headers=DEFAULT_EXTRA_HEADERS,
         )
         try:
             await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
@@ -116,7 +111,9 @@ async def capture_browser_artifacts(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Capture browser snapshot, selector map, and screenshot")
+    parser = argparse.ArgumentParser(
+        description="Capture browser snapshot, selector map, and screenshot"
+    )
     parser.add_argument("--url", required=True, help="Target URL to inspect")
     parser.add_argument(
         "--output-dir",
@@ -129,15 +126,16 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Run browser in headless mode (default: enabled)",
     )
+    settings = get_settings()
     parser.add_argument(
         "--wait-until",
-        default="domcontentloaded",
-        help="Playwright wait_until value (default: domcontentloaded)",
+        default=settings.BROWSER_WAIT_UNTIL,
+        help="Playwright wait_until value (default: from settings)",
     )
     parser.add_argument(
         "--timeout-ms",
         type=int,
-        default=15_000,
+        default=settings.BROWSER_TIMEOUT_MS,
         help="Page load timeout in milliseconds",
     )
     return parser.parse_args()
