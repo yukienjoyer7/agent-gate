@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config.settings import get_settings
+from app.core.schemas import Decision
 from app.llm.services import parse_prompt_plan
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -179,30 +180,29 @@ async def _execute_browser(steps: list[dict[str, Any]], prompt: str) -> dict[str
         request = build_action_request(proposal)
         response = decide(request)
 
+        # Any non-ALLOW decision halts the whole plan (block-all-upfront).
+        # BLOCK is final; the others keep scanning in case a worse decision
+        # (BLOCK > NEED_APPROVAL > SANITIZE > ASK_USER) appears later.
+        if response.decision != Decision.ALLOW and _decision_priority(
+            response.decision
+        ) > _decision_priority(worst_decision):
+            worst_decision = response.decision
+            worst_request = request
+            worst_response = response
         if response.decision == Decision.BLOCK:
-            worst_decision = Decision.BLOCK
-            worst_request = request
-            worst_response = response
-            break  # BLOCK is final — no need to continue
+            break
 
-        if response.decision == Decision.NEED_APPROVAL:
-            worst_decision = Decision.NEED_APPROVAL
-            worst_request = request
-            worst_response = response
-            # Continue checking: there might be a BLOCK later
-
-    # ── BLOCK / NEED_APPROVAL → reject the entire plan ────────────
+    # ── Any non-ALLOW decision → reject the entire plan ───────────
     if worst_decision != Decision.ALLOW:
-        status = (
-            ExecutionStatus.BLOCKED
-            if worst_decision == Decision.BLOCK
-            else ExecutionStatus.PENDING_APPROVAL
-        )
-        summary = (
-            "blocked by guardrail"
-            if worst_decision == Decision.BLOCK
-            else "pending approval"
-        )
+        from app.executors.router import decision_to_execution_status
+
+        status = decision_to_execution_status(worst_decision)
+        summary = {
+            Decision.BLOCK: "blocked by guardrail",
+            Decision.NEED_APPROVAL: "pending approval",
+            Decision.SANITIZE: "sanitized payload ready; awaiting confirmation",
+            Decision.ASK_USER: "clarification required from user before execution",
+        }[worst_decision]
         execution = ExecutionResult(
             run_id=worst_request.run_id,
             action_id=worst_request.action_id,
@@ -210,9 +210,7 @@ async def _execute_browser(steps: list[dict[str, Any]], prompt: str) -> dict[str
             status=status,
             result_summary=summary,
         )
-        event = await get_audit_repository().write(
-            worst_request, worst_response, execution
-        )
+        event = await get_audit_repository().write(worst_request, worst_response, execution)
         return event.model_dump(mode="json")
 
     # ── ALL steps ALLOW → proceed with Playwright ─────────────────
@@ -242,6 +240,18 @@ async def _execute_connector(step: dict[str, Any], prompt: str) -> dict[str, Any
     audit = None  # uses default audit repository (JSONL or Postgres per settings)
     event = await run_guarded_action(proposal, audit=audit)
     return event.model_dump(mode="json")
+
+
+def _decision_priority(decision: Decision) -> int:
+    """Order of severity used by the block-all-upfront plan guard.
+    Higher wins when multiple steps carry different non-ALLOW decisions."""
+    return {
+        Decision.ALLOW: 0,
+        Decision.ASK_USER: 1,
+        Decision.SANITIZE: 2,
+        Decision.NEED_APPROVAL: 3,
+        Decision.BLOCK: 4,
+    }[decision]
 
 
 def _find_url(steps: list[dict[str, Any]]) -> str | None:

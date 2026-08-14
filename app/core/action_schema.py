@@ -33,6 +33,11 @@ class ExecutionStatus(StrEnum):
     SKIPPED = "SKIPPED"
     BLOCKED = "BLOCKED"
     PENDING_APPROVAL = "PENDING_APPROVAL"
+    # Decision -> terminal/pre-terminal state for the non-execute paths:
+    # SANITIZE -> "Sanitized Preview Ready" (sanitized payload produced, not yet executed)
+    # ASK_USER -> "Ask User / Confirmation Required" (clarification needed before proceeding)
+    SANITIZED = "SANITIZED"
+    WAITING_USER = "WAITING_USER"
 
 
 class RiskLevel(StrEnum):

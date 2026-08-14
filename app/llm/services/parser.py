@@ -43,7 +43,7 @@ from app.llm.services.parse_old import parse_prompt_plan as _rule_parse_prompt_p
 logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://omni.noctican.my.id/v1/chat/completions"
-DEFAULT_MODEL = "nvidia/oc/deepseek-v4-flash-free"
+DEFAULT_MODEL = "oc/deepseek-v4-flash-free"
 
 # Aliases free models commonly return instead of the canonical action_type.
 # ``action`` → ``action_type`` mapping mirrors parse_old's ACTION_KEYWORDS.
