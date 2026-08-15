@@ -5,7 +5,13 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.config.settings import get_settings
 from app.core.browser_schema import BrowserElement
+
+
+def _default_domain() -> str:
+    """Default ``domain`` when a step/action carries none (from config)."""
+    return get_settings().DEFAULT_DOMAIN
 
 
 SCHEMA_VERSION = "0.1"
@@ -47,14 +53,12 @@ class RiskLevel(StrEnum):
     CRITICAL = "CRITICAL"
 
 
-
-
 class ActionRequest(BaseModel):
     schema_version: Literal["0.1"] = SCHEMA_VERSION
     run_id: str = Field(default_factory=lambda: new_id("run"))
     action_id: str = Field(default_factory=lambda: new_id("act"))
     source: str = "cli"
-    domain: str = "productivity"
+    domain: str = Field(default_factory=_default_domain)
     action_type: str
     target_system: str
     target: str | dict[str, Any]

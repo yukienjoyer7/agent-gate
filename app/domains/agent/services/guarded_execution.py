@@ -1,7 +1,7 @@
 from app.core.action_request import build_action_request
-from app.core.schemas import ActionTrace, AuditEvent
+from app.core.schemas import ActionTrace, AuditEvent, DecisionResponse
 from app.domains.audit.repositories import get_audit_repository
-from app.domains.guardrail.decision import decide
+from app.domains.guardrail.decision import adecide
 from app.executors import ExecutionRouter
 from app.tracing import LatencyTracker, TraceWriter
 
@@ -10,6 +10,7 @@ async def run_guarded_action(
     proposal: dict,
     audit=None,
     traces: TraceWriter | None = None,
+    decision: DecisionResponse | None = None,
 ) -> AuditEvent:
     latency = LatencyTracker()
     latency.start("action_request")
@@ -17,7 +18,11 @@ async def run_guarded_action(
     latency.stop("action_request")
 
     latency.start("guardrail")
-    decision = decide(request)
+    if decision is None:
+        # Let the guardrail run (rules + optional dedicated LLM judge).
+        # Callers that already evaluated the action (e.g. the reactive agent
+        # loop) pass their decision in to avoid double evaluation.
+        decision = await adecide(request)
     latency.stop("guardrail")
 
     latency.start("executor")

@@ -62,6 +62,62 @@ Audit events append to `artifacts/audit/events.jsonl` by default. Action traces
 append to `artifacts/traces/actions.jsonl`. The browser path is a mock skeleton
 until the Playwright executor is hardened.
 
+## Interactive chat runs (reactive agent loop)
+
+`POST /api/v1/chat/execute` now runs a **plan-then-react loop** instead of a
+parse-once/run-straight-through pipeline:
+
+```
+plan -> (guardrail -> approve / sanitize / execute -> observe -> replan)*
+```
+
+- Every step is guardrail-checked **one at a time** before it runs.
+- `NEED_APPROVAL` steps **pause** until you approve or decline them.
+- Sensitive steps (empty `password`/`token`/`{{placeholder}}` payload values)
+  get a **sanitize** status and pause until you type the value.
+- On failure (e.g. a login form appears) or when the plan is exhausted (e.g.
+  the calendar returned no events) the LLM **re-plans** the next step(s).
+
+### Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/v1/chat/execute` | Start a run in the background; returns `run_id` |
+| `POST /api/v1/chat/execute/stream` | Same run, but streams every event as **SSE** (`planning`, `guardrail`, `step_status`, `executing`, `awaiting_approval`, `awaiting_input`, `replanning`, `done`, ...) |
+| `POST /api/v1/chat/execute/{run_id}/respond` | Answer a paused step: `approve`, `decline`, or `input` (text / `fields`) for sanitize steps |
+| `GET /api/v1/chat/execute/{run_id}` | Live run state: overall status + per-step status (see which step waits) |
+| `GET /api/v1/runs/{run_id}/actions` | Poll the audit trail of a run |
+
+Example SSE flow: start `POST /chat/execute/stream`, keep the connection open,
+then `POST /chat/execute/{run_id}/respond` with
+`{"step_index": 0, "action": "approve"}` (or
+`{"action": "input", "fields": {"password": "..."}}`) — the stream resumes live.
+
+### Guardrail with a dedicated model
+
+The deterministic rules stay the first line of defence. Set
+`GUARDRAIL_LLM_ENABLED=true` (and optionally `GUARDRAIL_MODEL`) in `.env` to
+have a dedicated LLM judge review every non-BLOCK decision via tool-calling;
+a rule-based BLOCK can never be overridden. The loop, planner and replanner
+always use `LLM_MODEL` — only the guardrail uses its own model.
+
+### LLM provider config
+
+The LLM provider is configured entirely via env (see `.env.example`):
+
+| Env var | Purpose |
+|---------|---------|
+| `LLM_TYPE` | API dialect: `openai` (OpenAI-compatible) or `anthropic` |
+| `LLM_URL` | Full chat endpoint (e.g. `.../v1/chat/completions` or `.../v1/messages`) |
+| `LLM_MODEL` | Model id (e.g. `openrouter/free`, `claude-...`) |
+| `LLM_API_KEY` | API key (`Bearer` for openai, `x-api-key` for anthropic) |
+| `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | Request timeout / anthropic `max_tokens` |
+
+The shared client (`app.llm.services.client`) adapts the canonical payload/
+response between the two dialects automatically (system message, tools,
+tool-call round-trips). `GUARDRAIL_MODEL` only overrides the guardrail's
+model name — it always uses the same provider/type as the planner.
+
 ## Contributing
 
 ### Getting started

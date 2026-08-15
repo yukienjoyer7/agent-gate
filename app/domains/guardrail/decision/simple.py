@@ -2,6 +2,7 @@ import re
 from time import perf_counter
 from typing import Any
 
+from app.config.settings import get_settings
 from app.core.schemas import ActionRequest, Decision, DecisionResponse, RiskLevel
 
 # Domain → Risk Level mapping (from sprint.md contract: 5 domains)
@@ -15,10 +16,15 @@ DOMAIN_RISK: dict[str, RiskLevel] = {
     "filesystem": RiskLevel.LOW,
 }
 
-# Discriminative risk_hints
-BLOCK_HINTS = {"destructive", "unauthorized", "data_exfiltration"}
-NEED_APPROVAL_HINTS = {"external_send", "payment", "bulk_action", "refund"}
-ASK_USER_HINTS = {"ambiguous_target", "missing_target", "clarification_needed"}
+
+def _hint_sets(settings) -> tuple[set[str], set[str], set[str]]:
+    """BLOCK / NEED_APPROVAL / ASK_USER risk_hint sets, sourced from config."""
+    return (
+        set(settings.GUARDRAIL_BLOCK_HINTS),
+        set(settings.GUARDRAIL_NEED_APPROVAL_HINTS),
+        set(settings.GUARDRAIL_ASK_USER_HINTS),
+    )
+
 
 # Sensitive-content patterns → SANITIZE. The payload is not rejected; the
 # matched content is masked in `sanitized_payload` and the decision becomes
@@ -76,9 +82,21 @@ def _redact_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]
     return sanitized, sorted(set(entities))
 
 
-def decide(action: ActionRequest) -> DecisionResponse:
+def decide_rule(action: ActionRequest) -> DecisionResponse:
+    """Deterministic rule-based guardrail decision (~0ms, zero cost).
+
+    The single entry point for the whole guardrail: maps ``risk_hint`` +
+    ``domain`` to ALLOW / NEED_APPROVAL / SANITIZE / ASK_USER / BLOCK via a
+    fixed lookup table plus value-based secret redaction. The reactive agent
+    loop and async callers use the hybrid
+    :func:`app.domains.guardrail.decision.adecide` (rules first, optional
+    dedicated LLM judge for non-BLOCK cases); the sync ``decide`` alias
+    remains for legacy callers.
+    """
     started = perf_counter()
-    domain = action.domain or "productivity"
+    settings = get_settings()
+    block_hints, need_approval_hints, ask_user_hints = _hint_sets(settings)
+    domain = action.domain or settings.DEFAULT_DOMAIN
     risk_hint = action.risk_hint or "unknown"
 
     base_risk = DOMAIN_RISK.get(domain, RiskLevel.LOW)
@@ -88,7 +106,7 @@ def decide(action: ActionRequest) -> DecisionResponse:
     sanitized_payload, sensitive_entities = _redact_payload(action.payload)
 
     # ── Priority 1: BLOCK (destructive / unauthorized) ────────────
-    if risk_hint in BLOCK_HINTS:
+    if risk_hint in block_hints:
         decision = Decision.BLOCK
         risk_level = RiskLevel.CRITICAL
         risk_score = 0.95
@@ -105,7 +123,7 @@ def decide(action: ActionRequest) -> DecisionResponse:
         reasons.append("sanitized payload prepared; execute only the sanitized payload")
 
     # ── Priority 3: ASK_USER (not enough information to decide) ────
-    elif risk_hint in ASK_USER_HINTS:
+    elif risk_hint in ask_user_hints:
         decision = Decision.ASK_USER
         risk_level = RiskLevel.LOW
         risk_score = 0.30
@@ -114,7 +132,7 @@ def decide(action: ActionRequest) -> DecisionResponse:
         reasons.append("do not execute until the user provides the missing information")
 
     # ── Priority 4: NEED_APPROVAL (risky action types / high-risk domains) ────
-    elif risk_hint in NEED_APPROVAL_HINTS or base_risk in (RiskLevel.CRITICAL, RiskLevel.HIGH):
+    elif risk_hint in need_approval_hints or base_risk in (RiskLevel.CRITICAL, RiskLevel.HIGH):
         decision = Decision.NEED_APPROVAL
         risk_level = base_risk
         risk_score = 0.80 if base_risk == RiskLevel.CRITICAL else 0.60

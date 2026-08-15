@@ -1,9 +1,10 @@
-"""Tests for the OpenRouter-backed LLM parser (app.llm.services.parser)."""
+"""Tests for the LLM-backed parser (app.llm.services.parser)."""
 
 import asyncio
 import json
 
 import httpx
+import pytest
 
 from app.config.settings import get_settings
 from app.llm.services import parser as llm_parser
@@ -95,9 +96,7 @@ class TestNormalizeStep:
         assert gmail["domain"] == "productivity"
         assert gmail["risk_hint"] == "external_send"
 
-        github = llm_parser._normalize_step(
-            {"action_type": "API_CALL", "target_system": "github"}
-        )
+        github = llm_parser._normalize_step({"action_type": "API_CALL", "target_system": "github"})
         assert github["domain"] == "code_protection"
 
         file_step = llm_parser._normalize_step(
@@ -156,6 +155,7 @@ class TestParsePromptPlan:
 
     def test_plan_shape(self, monkeypatch) -> None:
         """_llm_plan is mocked at its post-normalization contract (2 steps)."""
+
         async def fake_llm_plan(prompt: str) -> dict:
             return {
                 "plan": [
@@ -270,24 +270,21 @@ class TestToolCallLoop:
             assert arguments == {"url": "https://playwright.dev"}
             return {"url": "https://playwright.dev", "count": 1, "elements": []}
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         monkeypatch.setattr(llm_parser, "execute_tool", fake_execute_tool)
         try:
-            result = _run(
-                llm_parser.parse_prompt_plan("Click Get started on playwright.dev")
-            )
+            result = _run(llm_parser.parse_prompt_plan("Click Get started on playwright.dev"))
         finally:
             get_settings.cache_clear()
 
         assert len(calls) == 2
         # First request carries the tool definition; second carries tool result.
-        assert any("get_accessibility_tree" in json.dumps(tool)
-                   for tool in (calls[0].get("tools") or []))
-        tool_messages = [
-            msg for msg in calls[1]["messages"] if msg.get("role") == "tool"
-        ]
+        assert any(
+            "get_accessibility_tree" in json.dumps(tool) for tool in (calls[0].get("tools") or [])
+        )
+        tool_messages = [msg for msg in calls[1]["messages"] if msg.get("role") == "tool"]
         assert len(tool_messages) == 1
         assert tool_messages[0]["tool_call_id"] == "call_1"
         assert "url" in tool_messages[0]["content"]
@@ -297,7 +294,8 @@ class TestToolCallLoop:
         assert result["plan"][-1]["payload"]["label"] == "Get started"
 
     def test_tool_calls_loop_capped_by_max_iterations(self, monkeypatch) -> None:
-        """Endless tool calls hit the iteration cap and raise (→ rule fallback)."""
+        """Endless tool calls hit the iteration cap and raise instead of hanging."""
+
         async def fake_post(self, url, json=None, headers=None):
             return _Resp(
                 {
@@ -325,20 +323,16 @@ class TestToolCallLoop:
         async def fake_execute_tool(name: str, arguments: dict) -> dict:
             return {"error": "boom"}
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
         monkeypatch.setenv("LLM_MAX_TOOL_ITERATIONS", "2")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         monkeypatch.setattr(llm_parser, "execute_tool", fake_execute_tool)
         try:
-            result = _run(
-                llm_parser.parse_prompt_plan("Click something on x.dev")
-            )
+            with pytest.raises(ValueError, match="max tool iterations"):
+                _run(llm_parser.parse_prompt_plan("Click something on x.dev"))
         finally:
             get_settings.cache_clear()
-
-        # Falls back to the rule-based parser instead of hanging forever.
-        assert result["llm_provider"] == "dummy"
 
     def test_response_format_omitted_when_tools_enabled(self, monkeypatch) -> None:
         """JSON mode biases models against tool calls; only send it tool-less."""
@@ -363,7 +357,7 @@ class TestToolCallLoop:
                 }
             )
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         try:
@@ -397,7 +391,7 @@ class TestToolCallLoop:
                 }
             )
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
         monkeypatch.setenv("LLM_TOOLS_ENABLED", "false")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
@@ -440,13 +434,11 @@ class TestToolCallLoop:
                 }
             )
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         try:
-            result = _run(
-                llm_parser.parse_prompt_plan("Open playwright.dev")
-            )
+            result = _run(llm_parser.parse_prompt_plan("Open playwright.dev"))
         finally:
             get_settings.cache_clear()
 
@@ -474,6 +466,7 @@ class TestLlmPlanPipeline:
 
     def test_raw_model_output_is_normalized_into_plan(self, monkeypatch) -> None:
         """Model-style output ({action: click, url: ...}) gets BROWSER_OPEN prepended."""
+
         async def fake_post(self, url, json=None, headers=None):
             class _Resp:
                 def raise_for_status(self):
@@ -492,13 +485,15 @@ class TestLlmPlanPipeline:
 
             return _Resp()
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        monkeypatch.setenv("OPENROUTER_MODEL", "openrouter/free")
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_MODEL", "openrouter/free")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         try:
             # Destructive keyword also proves _apply_prompt_risk runs in-order.
-            result = _run(llm_parser.parse_prompt_plan("Delete the account button on playwright.dev"))
+            result = _run(
+                llm_parser.parse_prompt_plan("Delete the account button on playwright.dev")
+            )
         finally:
             get_settings.cache_clear()
 
@@ -540,15 +535,13 @@ class TestLlmPlanPipeline:
 
             return _Resp()
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-        monkeypatch.setenv("OPENROUTER_MODEL", "openrouter/free")
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_MODEL", "openrouter/free")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         try:
             result = _run(
-                llm_parser.parse_prompt_plan(
-                    "open youtube.com, search jerome, and screenshot"
-                )
+                llm_parser.parse_prompt_plan("open youtube.com, search jerome, and screenshot")
             )
         finally:
             get_settings.cache_clear()
@@ -563,29 +556,25 @@ class TestLlmPlanPipeline:
         assert result["plan"][2]["payload"]["delay_ms"] == 2000
 
 
-class TestFallback:
-    """Verify fallback to the rule-based parser on failure."""
+class TestNoFallback:
+    """The rule-based fallback parser was removed: LLM errors propagate."""
 
-    def test_falls_back_without_api_key(self, monkeypatch) -> None:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    def test_raises_without_api_key(self, monkeypatch) -> None:
+        monkeypatch.setenv("LLM_API_KEY", "")
         get_settings.cache_clear()
         try:
-            result = _run(llm_parser.parse_prompt_plan("Open youtube.com"))
+            with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+                _run(llm_parser.parse_prompt_plan("Open youtube.com"))
         finally:
             get_settings.cache_clear()
-        # Rule-based parser produces the same plan even without the LLM.
-        assert result["llm_provider"] == "dummy"
-        assert result["plan"][0]["action_type"] == "BROWSER_OPEN"
-        assert result["plan"][0]["target"] == "https://youtube.com"
 
-    def test_falls_back_on_llm_error(self, monkeypatch) -> None:
+    def test_raises_on_llm_error(self, monkeypatch) -> None:
         async def boom(prompt: str) -> dict:
             raise RuntimeError("LLM exploded")
 
         monkeypatch.setattr(llm_parser, "_llm_plan", boom)
-        result = _run(llm_parser.parse_prompt_plan("Send email to john@example.com saying hello"))
-        assert result["llm_provider"] == "dummy"
-        assert result["plan"][0]["target_system"] == "gmail"
+        with pytest.raises(RuntimeError, match="LLM exploded"):
+            _run(llm_parser.parse_prompt_plan("Send email to john@example.com saying hello"))
 
     def test_extract_json_handles_markdown_fence(self) -> None:
         content = '```json\n{"plan": [], "summary": "x"}\n```'
@@ -609,16 +598,22 @@ class TestPromptRiskSafetyNet:
     """Verify deterministic risk keywords override LLM output (guardrail safety)."""
 
     def test_destructive_keyword_overrides_risk_hint(self) -> None:
-        steps = [{"action_type": "BROWSER_CLICK", "target_system": "browser", "risk_hint": "unknown"}]
+        steps = [
+            {"action_type": "BROWSER_CLICK", "target_system": "browser", "risk_hint": "unknown"}
+        ]
         result = llm_parser._apply_prompt_risk(steps, "Delete the repository on github.com")
         assert result[0]["risk_hint"] == "destructive"
 
     def test_unauthorized_keyword_overrides_risk_hint(self) -> None:
-        steps = [{"action_type": "BROWSER_CLICK", "target_system": "browser", "risk_hint": "unknown"}]
+        steps = [
+            {"action_type": "BROWSER_CLICK", "target_system": "browser", "risk_hint": "unknown"}
+        ]
         result = llm_parser._apply_prompt_risk(steps, "Bypass the login page on admin.example.com")
         assert result[0]["risk_hint"] == "unauthorized"
 
     def test_safe_prompt_unchanged(self) -> None:
-        steps = [{"action_type": "BROWSER_CLICK", "target_system": "browser", "risk_hint": "unknown"}]
+        steps = [
+            {"action_type": "BROWSER_CLICK", "target_system": "browser", "risk_hint": "unknown"}
+        ]
         result = llm_parser._apply_prompt_risk(steps, "Click the login button on playwright.dev")
         assert result[0]["risk_hint"] == "unknown"

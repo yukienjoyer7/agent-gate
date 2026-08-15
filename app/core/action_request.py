@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.config.settings import get_settings
 from app.core.schemas import ActionRequest, new_id
 
 
@@ -9,7 +10,7 @@ def build_action_request(proposal: dict[str, Any]) -> ActionRequest:
         run_id=proposal.get("run_id") or new_id("run"),
         action_id=proposal.get("action_id") or new_id("act"),
         source=proposal.get("source", "cli"),
-        domain=proposal.get("domain", "productivity"),
+        domain=proposal.get("domain") or get_settings().DEFAULT_DOMAIN,
         action_type=proposal["action_type"],
         target_system=proposal["target_system"],
         target=proposal.get("target", proposal["target_system"]),

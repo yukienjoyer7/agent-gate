@@ -12,9 +12,11 @@ AnyAuditRepository = Union[AuditRepository, AuditRepositoryDB]
 def get_audit_repository() -> AnyAuditRepository:
     """
     Returns the configured audit repository, chosen via
-    settings.AUDIT_BACKEND ("jsonl" | "postgres"). Default is "jsonl" --
-    unchanged behavior from Sprint 1/2 -- until "postgres" is explicitly
-    opted into per environment.
+    settings.AUDIT_BACKEND ("jsonl" | "postgres"). The settings default is
+    "postgres" (action-sourced, writes to audit_logs via migration 0001);
+    "jsonl" is the no-DB escape hatch for local dev / rollback. The value
+    lives in one place — ``app.config.settings`` — and can be overridden per
+    environment via env, e.g. ``AUDIT_BACKEND=jsonl`` in .env.
 
     Both repositories expose the same async interface (write, latest, list,
     by_run, by_action), mirroring the same write-once-per-action behavior --
@@ -25,4 +27,3 @@ def get_audit_repository() -> AnyAuditRepository:
     if backend == "postgres":
         return AuditRepositoryDB()
     return AuditRepository()
-

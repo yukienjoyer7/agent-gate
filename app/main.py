@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import actions, approvals, audits, benchmark, chat, health, oauth, runs
 from app.config.logging import configure_logging
@@ -17,6 +18,16 @@ def create_app() -> FastAPI:
         title="AgentGate",
         version="0.1.0",
         description="Guarded agent execution platform (MVP)",
+    )
+
+    # Allow browser-based demo clients (e.g. the fe/ demo page) to call the API
+    # from any origin. Credentials are never used, so "*" is safe.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     app.include_router(health.router, prefix="/api/v1")

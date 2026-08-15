@@ -4,6 +4,10 @@ import asyncio
 from types import SimpleNamespace
 
 from app.api.v1.chat import _execute_browser, _plan_to_browser_actions
+from app.core.action_request import build_action_request
+from app.core.schemas import Decision, ExecutionStatus
+from app.domains.guardrail.decision import decide
+from app.executors.router import decision_to_execution_status
 
 
 class _FakeAuditRepo:
@@ -47,22 +51,11 @@ def test_execute_browser_rejects_plan_without_url(monkeypatch) -> None:
     assert "no browser URL" in event["execution_json"]["result_summary"]
 
 
-def test_execute_browser_rejects_plan_with_sanitize_step(monkeypatch) -> None:
-    """A browser plan whose payload contains a secret must be rejected at
-    SANITIZE (sanitized preview) — Playwright must never receive it."""
-    fake = _FakeAuditRepo()
-    monkeypatch.setattr("app.domains.audit.repositories.get_audit_repository", lambda: fake)
-
-    steps = [
-        {
-            "source": "chat",
-            "domain": "browser",
-            "action_type": "BROWSER_OPEN",
-            "target_system": "browser",
-            "target": "https://example.com",
-            "risk_hint": "unknown",
-            "payload": {"url": "https://example.com"},
-        },
+def test_plan_step_with_secret_payload_sanitizes_before_execution() -> None:
+    """A browser step whose payload embeds a secret must be redacted by the
+    guardrail (SANITIZE → SANITIZED) — the raw secret must never reach
+    Playwright."""
+    request = build_action_request(
         {
             "source": "chat",
             "domain": "browser",
@@ -71,30 +64,20 @@ def test_execute_browser_rejects_plan_with_sanitize_step(monkeypatch) -> None:
             "target": "https://example.com",
             "risk_hint": "unknown",
             "payload": {"label": "API key", "value": "sk-1234567890abcdefgh"},
-        },
-    ]
-    event = asyncio.run(_execute_browser(steps, "paste api key"))
+        }
+    )
+    response = decide(request)
 
-    assert event["execution_status"] == "SANITIZED"
-    assert event["decision_json"]["decision"] == "SANITIZE"
-    assert "sanitized" in event["execution_json"]["result_summary"]
+    assert response.decision == Decision.SANITIZE
+    assert response.sanitized_payload == {"label": "API key", "value": "[REDACTED]"}
+    assert response.sensitive_entities == ["api_key"]
+    assert decision_to_execution_status(response.decision) == ExecutionStatus.SANITIZED
 
 
-def test_execute_browser_rejects_plan_with_ask_user_step(monkeypatch) -> None:
-    """A browser plan needing clarification must not reach Playwright."""
-    fake = _FakeAuditRepo()
-    monkeypatch.setattr("app.domains.audit.repositories.get_audit_repository", lambda: fake)
-
-    steps = [
-        {
-            "source": "chat",
-            "domain": "browser",
-            "action_type": "BROWSER_OPEN",
-            "target_system": "browser",
-            "target": "https://example.com",
-            "risk_hint": "unknown",
-            "payload": {"url": "https://example.com"},
-        },
+def test_plan_step_needing_clarification_waits_for_user() -> None:
+    """A browser step with an ambiguous target must yield ASK_USER
+    (WAITING_USER) — it must never reach Playwright."""
+    request = build_action_request(
         {
             "source": "chat",
             "domain": "browser",
@@ -103,12 +86,13 @@ def test_execute_browser_rejects_plan_with_ask_user_step(monkeypatch) -> None:
             "target": "https://example.com",
             "risk_hint": "ambiguous_target",
             "payload": {"label": "Continue"},
-        },
-    ]
-    event = asyncio.run(_execute_browser(steps, "continue on example.com"))
+        }
+    )
+    response = decide(request)
 
-    assert event["execution_status"] == "WAITING_USER"
-    assert event["decision_json"]["decision"] == "ASK_USER"
+    assert response.decision == Decision.ASK_USER
+    assert any("clarification" in reason for reason in response.reasons)
+    assert decision_to_execution_status(response.decision) == ExecutionStatus.WAITING_USER
 
 
 def test_plan_to_browser_actions_maps_submit() -> None:
