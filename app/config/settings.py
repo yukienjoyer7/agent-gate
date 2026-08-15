@@ -144,6 +144,13 @@ class Settings(BaseSettings):
         "bulk_action",
         "refund",
     ]
+    # ASK_USER risk_hints: too little information to decide → the guardrail
+    # asks the user for clarification before any execution.
+    GUARDRAIL_ASK_USER_HINTS: Annotated[list[str], NoDecode] = [
+        "ambiguous_target",
+        "missing_target",
+        "clarification_needed",
+    ]
     # Default domain when a step/action carries none (falls back to this
     # instead of the raw string "productivity" being repeated in the schema,
     # builder and guardrail).
@@ -220,6 +227,7 @@ class Settings(BaseSettings):
         "INTERACTIVE_BROWSER_ACTIONS",
         "GUARDRAIL_BLOCK_HINTS",
         "GUARDRAIL_NEED_APPROVAL_HINTS",
+        "GUARDRAIL_ASK_USER_HINTS",
         mode="before",
     )
     @classmethod

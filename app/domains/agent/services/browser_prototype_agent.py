@@ -512,15 +512,14 @@ def _public_snapshot(matched_elements: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def _skipped_execution(request: ActionRequest, decision) -> ExecutionResult:
-    if decision.decision == Decision.BLOCK:
-        status = ExecutionStatus.BLOCKED
-        summary = "blocked by guardrail"
-    elif decision.decision == Decision.NEED_APPROVAL:
-        status = ExecutionStatus.PENDING_APPROVAL
-        summary = "pending approval"
-    else:
+    from app.executors.router import decision_to_execution_status
+
+    status = decision_to_execution_status(decision.decision)
+    if status is None:
         status = ExecutionStatus.SKIPPED
         summary = f"skipped by guardrail decision: {decision.decision}"
+    else:
+        summary = f"{status.value.lower()} by guardrail decision: {decision.decision}"
 
     return ExecutionResult(
         run_id=request.run_id,
