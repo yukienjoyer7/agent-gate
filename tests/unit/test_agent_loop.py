@@ -273,6 +273,44 @@ async def test_sanitize_input_then_execute(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ask_user_clarification_then_execute(monkeypatch):
+    """An ambiguous step (risk_hint in the ASK_USER set) pauses once for
+    clarification, stores the answer, then executes."""
+    browser_calls: list[dict] = []
+
+    async def fake_plan(prompt):
+        step = _open_step()
+        step["risk_hint"] = "ambiguous_target"
+        return {
+            "plan": [step],
+            "llm_provider": "dummy",
+            "raw_prompt": prompt,
+            "human_readable": "",
+        }
+
+    async def fake_browser(**kwargs):
+        browser_calls.append(kwargs)
+        return _event(kwargs["run_id"], kwargs["action_id"], data={"final_url": kwargs["url"]})
+
+    monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
+    monkeypatch.setattr(agent_loop, "run_browser_prototype_agent", fake_browser)
+
+    run = run_registry.create("buka sesuatu")
+    task = asyncio.create_task(agent_loop.run_agent_loop(run))
+    await _wait_for(lambda: run.status == RunStatus.WAITING_INPUT)
+    assert run.steps[0].status == StepStatus.WAITING_INPUT
+
+    run_registry.respond(run, 0, "input", fields={"clarification": "buka github.com"})
+    await asyncio.wait_for(task, timeout=5)
+
+    assert run.status == RunStatus.DONE
+    assert run.steps[0].status == StepStatus.DONE
+    assert run.steps[0].clarified is True
+    assert run.steps[0].data["user_clarification"] == "buka github.com"
+    assert browser_calls[0]["run_id"] == run.run_id
+
+
+@pytest.mark.asyncio
 async def test_replan_after_failure(monkeypatch):
     """A failed browser batch triggers the replanner, which appends a step."""
     browser_calls: list[dict] = []

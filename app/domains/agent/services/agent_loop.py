@@ -12,6 +12,8 @@ into a plan-then-react loop::
   ``POST /chat/execute/{run_id}/respond`` (approve / decline).
 - Sensitive steps ("sanitize") pause and wait for the user to type a missing
   value (password, API key, ``{{placeholder}}``) via the same endpoint.
+- ``ASK_USER`` steps (ambiguous target / missing information) pause once and
+  ask the user for clarification via the same endpoint.
 - After a failure, or when the plan is exhausted, the LLM replanner decides
   the next step(s) from the observation — enabling branches like "login
   needed" or "calendar returned no events → do something else".
@@ -204,36 +206,12 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
             _set_status(run, step, StepStatus.BLOCKED)
             return None
 
-        if decision.decision == Decision.NEED_APPROVAL:
-            step.status = StepStatus.WAITING_APPROVAL
-            run.status = RunStatus.WAITING_APPROVAL
-            _set_status(run, step, StepStatus.WAITING_APPROVAL)
-            _emit(run, "awaiting_approval", _decision_event(run, step, decision))
-            response = await _wait_for_user(run, step, settings.AGENT_WAIT_RESPONSE_TIMEOUT_SEC)
-            if response is None:  # timeout
-                return None
-            run.status = RunStatus.RUNNING
-            if response["action"] == "decline":
-                await _write_skipped_audit(
-                    run, step, decision, ExecutionStatus.SKIPPED, "declined by user"
-                )
-                run.status = RunStatus.DECLINED
-                _set_status(run, step, StepStatus.DECLINED)
-                return None
-            step.status = StepStatus.APPROVED
-            _set_status(run, step, StepStatus.APPROVED)
-            decision = decision.model_copy(
-                update={
-                    "decision": Decision.ALLOW,
-                    "reasons": [*decision.reasons, "approved by user"],
-                    "next_step": "execute",
-                }
-            )
-            step.decision = decision.model_dump(mode="json")
-            return decision
-
-        # Sanitize: does the step need a value the user must type?
-        fields = detect_sensitive_fields(request.payload, step.answered)
+        # Sanitize first: does the step need a value the user must type? Run
+        # before approval so a step carrying placeholders always asks for the
+        # input first (the guardrail is re-evaluated with the filled payload).
+        fields = detect_sensitive_fields(
+            request.payload, step.answered, step.data.get("action_type")
+        )
         if not fields and decision.sanitized_payload:
             fields = [
                 {"key": str(key), "label": str(key).replace("_", " ").title()}
@@ -262,6 +240,81 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
             _apply_user_input(step, response)
             # Re-evaluate with the filled payload before executing.
             continue
+
+        if decision.decision == Decision.NEED_APPROVAL:
+            step.status = StepStatus.WAITING_APPROVAL
+            run.status = RunStatus.WAITING_APPROVAL
+            _set_status(run, step, StepStatus.WAITING_APPROVAL)
+            _emit(run, "awaiting_approval", _decision_event(run, step, decision))
+            response = await _wait_for_user(run, step, settings.AGENT_WAIT_RESPONSE_TIMEOUT_SEC)
+            if response is None:  # timeout
+                return None
+            run.status = RunStatus.RUNNING
+            if response["action"] == "decline":
+                await _write_skipped_audit(
+                    run, step, decision, ExecutionStatus.SKIPPED, "declined by user"
+                )
+                run.status = RunStatus.DECLINED
+                _set_status(run, step, StepStatus.DECLINED)
+                return None
+            step.status = StepStatus.APPROVED
+            _set_status(run, step, StepStatus.APPROVED)
+            decision = decision.model_copy(
+                update={
+                    "decision": Decision.ALLOW,
+                    "reasons": [*decision.reasons, "approved by user"],
+                    "next_step": "execute",
+                }
+            )
+            step.decision = decision.model_dump(mode="json")
+            return decision
+
+        if decision.decision == Decision.ASK_USER:
+            # Ambiguous step (e.g. unclear target). Pause once and ask the user
+            # for clarification; after that, treat it as user-approved.
+            if step.clarified:
+                decision = decision.model_copy(
+                    update={
+                        "decision": Decision.ALLOW,
+                        "reasons": [*decision.reasons, "clarified by user"],
+                        "next_step": "execute",
+                    }
+                )
+                step.decision = decision.model_dump(mode="json")
+                return decision
+            step.status = StepStatus.WAITING_INPUT
+            run.status = RunStatus.WAITING_INPUT
+            _set_status(run, step, StepStatus.WAITING_INPUT)
+            _emit(
+                run,
+                "awaiting_input",
+                {
+                    "run_id": run.run_id,
+                    "index": step.index,
+                    "sanitize": False,
+                    "clarify": True,
+                    "fields": [{"key": "clarification", "label": "Informasi yang kurang"}],
+                    "reasons": decision.reasons,
+                    "step": step.public(),
+                },
+            )
+            response = await _wait_for_user(run, step, settings.AGENT_WAIT_RESPONSE_TIMEOUT_SEC)
+            if response is None:  # timeout
+                return None
+            run.status = RunStatus.RUNNING
+            fields = response.get("fields") or {}
+            text = str(fields.get("clarification") or response.get("text") or "").strip()
+            step.data["user_clarification"] = text
+            step.clarified = True
+            decision = decision.model_copy(
+                update={
+                    "decision": Decision.ALLOW,
+                    "reasons": [*decision.reasons, f"user clarified: {text or '(empty)'}"],
+                    "next_step": "execute",
+                }
+            )
+            step.decision = decision.model_dump(mode="json")
+            return decision
 
         return decision
 

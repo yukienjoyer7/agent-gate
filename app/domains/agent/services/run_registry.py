@@ -39,6 +39,9 @@ class StepState:
     execution: dict[str, Any] | None = None
     sanitize_fields: list[dict[str, Any]] | None = None
     answered: set[str] = field(default_factory=set)
+    # True once the user answered an ASK_USER clarification for this step —
+    # prevents re-pausing the same step forever.
+    clarified: bool = False
     audit_event: dict[str, Any] | None = None
 
     def public(self) -> dict[str, Any]:
