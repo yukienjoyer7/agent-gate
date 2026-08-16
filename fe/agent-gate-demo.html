@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentGate — Demo Reactive Agent Loop</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a23;
+    --panel-2: #1e2230;
+    --border: #2a2f3f;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --blue: #4f8cff;
+    --cyan: #38c6d9;
+    --green: #3ecf8e;
+    --yellow: #f5c451;
+    --amber: #ff9f43;
+    --red: #ff5c5c;
+    --purple: #b07cf5;
+    --gray: #6b7280;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 22px; border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #141824, var(--bg));
+  }
+  header h1 { font-size: 18px; font-weight: 700; letter-spacing: .3px; }
+  header h1 span { color: var(--blue); }
+  .spacer { flex: 1; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+    text-transform: capitalize;
+  }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .badge.running .dot { background: var(--blue); animation: pulse 1.2s infinite; }
+  .badge.waiting_approval { border-color: var(--yellow); color: var(--yellow); }
+  .badge.waiting_approval .dot { background: var(--yellow); animation: pulse 1.2s infinite; }
+  .badge.waiting_input { border-color: var(--amber); color: var(--amber); }
+  .badge.waiting_input .dot { background: var(--amber); animation: pulse 1.2s infinite; }
+  .badge.done { border-color: var(--green); color: var(--green); }
+  .badge.done .dot { background: var(--green); }
+  .badge.error, .badge.blocked { border-color: var(--red); color: var(--red); }
+  .badge.error .dot, .badge.blocked .dot { background: var(--red); }
+  .badge.declined, .badge.cancelled { color: var(--muted); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .run-id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 18px 22px; max-width: 1500px; margin: 0 auto; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .card h2 {
+    font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--muted); padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card h2 .count { color: var(--blue); font-family: var(--mono); }
+  .card-body { padding: 14px 16px; }
+
+  /* Command box */
+  textarea {
+    width: 100%; min-height: 74px; resize: vertical; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 10px; color: var(--text);
+    padding: 12px 14px; font-size: 14.5px; font-family: inherit; outline: none;
+  }
+  textarea:focus { border-color: var(--blue); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .chip {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+    transition: all .15s;
+  }
+  .chip:hover { border-color: var(--blue); color: var(--text); }
+  .actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  button {
+    border: none; border-radius: 10px; padding: 10px 20px; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: filter .15s, opacity .15s; font-family: inherit;
+  }
+  button:hover { filter: brightness(1.15); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-ghost { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+  .btn-approve { background: var(--green); color: #062b1c; }
+  .btn-decline { background: var(--red); color: #fff; }
+  .btn-input { background: var(--amber); color: #2b1500; }
+  .btn-reset { background: transparent; color: var(--muted); border: 1px dashed var(--border); }
+
+  /* Steps table */
+  .steps-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th {
+    text-align: left; color: var(--muted); font-size: 11.5px; text-transform: uppercase;
+    letter-spacing: .6px; padding: 9px 12px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td { padding: 10px 12px; border-bottom: 1px solid #20263a; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr.waiting_approval { background: rgba(245, 196, 81, .07); }
+  tr.waiting_input { background: rgba(255, 159, 67, .07); }
+  tr.done { opacity: .75; }
+  .st { white-space: nowrap; }
+  .step-status {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600;
+    padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+    white-space: nowrap;
+  }
+  .step-status.running { color: var(--blue); border-color: var(--blue); }
+  .step-status.waiting_approval { color: var(--yellow); border-color: var(--yellow); }
+  .step-status.waiting_input { color: var(--amber); border-color: var(--amber); }
+  .step-status.approved { color: var(--green); border-color: var(--green); }
+  .step-status.done { color: var(--green); }
+  .step-status.failed, .step-status.blocked, .step-status.declined { color: var(--red); border-color: var(--red); }
+  .step-status.pending { color: var(--muted); }
+  .step-status.skipped { color: var(--gray); }
+  .mono { font-family: var(--mono); }
+  .muted { color: var(--muted); }
+  .detail { font-size: 12px; color: var(--muted); max-width: 420px; word-break: break-word; }
+  .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 26px 10px; }
+
+  /* Interaction panel */
+  #interaction { display: none; }
+  #interaction.visible { display: block; }
+  .interaction-box { border-radius: 10px; padding: 14px; border: 1px solid var(--border); background: var(--panel-2); }
+  .interaction-box.approval { border-color: var(--yellow); }
+  .interaction-box.input { border-color: var(--amber); }
+  .interaction-title { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  .interaction-box.approval .interaction-title { color: var(--yellow); }
+  .interaction-box.input .interaction-title { color: var(--amber); }
+  .interaction-sub { color: var(--muted); font-size: 12.5px; margin-bottom: 10px; }
+  .reasons { margin: 8px 0 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .reason {
+    font-size: 11.5px; font-family: var(--mono); background: rgba(245, 196, 81, .12);
+    color: var(--yellow); border: 1px solid rgba(245, 196, 81, .35); padding: 3px 9px; border-radius: 6px;
+  }
+  .input-fields { display: flex; flex-direction: column; gap: 9px; margin: 10px 0 12px; }
+  .input-fields label { font-size: 12px; color: var(--muted); }
+  .input-fields input {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+    padding: 9px 12px; font-size: 13.5px; font-family: var(--mono); outline: none; width: 100%;
+  }
+  .input-fields input:focus { border-color: var(--amber); }
+
+  /* Event log */
+  #log {
+    height: 520px; overflow-y: auto; padding: 10px 12px; font-family: var(--mono);
+    font-size: 12px; background: #0c0e14;
+  }
+  .log-line { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid #141824; align-items: baseline; }
+  .log-time { color: #4b5468; flex-shrink: 0; }
+  .log-type {
+    flex-shrink: 0; font-weight: 700; font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+    min-width: 84px;
+  }
+  .log-msg { color: #c3c9d6; word-break: break-word; }
+  .t-planning, .t-replanning { color: var(--purple); }
+  .t-plan { color: var(--purple); }
+  .t-guardrail { color: var(--orange, #ff9f43); }
+  .t-executing { color: var(--cyan); }
+  .t-step_result { color: var(--green); }
+  .t-step_status { color: var(--gray); }
+  .t-awaiting_approval { color: var(--yellow); }
+  .t-awaiting_input { color: var(--amber); }
+  .t-run_started { color: var(--blue); }
+  .t-done { color: var(--green); }
+  .t-error { color: var(--red); }
+  .log-line.err .log-msg { color: var(--red); }
+
+  footer {
+    padding: 10px 22px; color: var(--muted); font-size: 12px;
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap; max-width: 1500px; margin: 0 auto;
+  }
+  footer input {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 5px 10px; font-family: var(--mono); font-size: 12px; width: 260px; outline: none;
+  }
+  footer input:focus { border-color: var(--blue); }
+  .flash { color: var(--amber); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AgentGate <span>·</span> Reactive Agent Loop</h1>
+  <div class="spacer"></div>
+  <span id="runBadge" class="badge"><span class="dot"></span> idle</span>
+  <span id="runId" class="run-id">—</span>
+</header>
+
+<main>
+  <!-- LEFT: command + steps + interaction -->
+  <div style="display:flex; flex-direction:column; gap:18px;">
+    <section class="card">
+      <h2>📣 Perintah</h2>
+      <div class="card-body">
+        <textarea id="prompt" placeholder="Tulis perintah dalam bahasa natural, mis. &quot;Kirim email ke john@example.com bilang hello&quot;"></textarea>
+        <div class="chips" id="chips"></div>
+        <div class="actions">
+          <button id="btnStart" class="btn-primary">▶ Mulai Run (SSE)</button>
+          <button id="btnReset" class="btn-reset">Reset</button>
+          <span id="flash" class="flash"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>🧱 Langkah (steps) <span id="stepCount" class="count">0</span></h2>
+      <div class="steps-wrap">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Aksi</th><th>Target</th><th>Status</th><th>Detail</th></tr>
+          </thead>
+          <tbody id="stepBody"></tbody>
+        </table>
+        <div id="stepEmpty" class="empty">Belum ada run. Ketik perintah lalu klik <b>Mulai Run</b>.</div>
+      </div>
+    </section>
+
+    <section class="card" id="interaction">
+      <h2>✋ Perlu Tindakan Kamu</h2>
+      <div class="card-body">
+        <div id="interactionContent"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- RIGHT: event log -->
+  <section class="card">
+    <h2>📡 Aliran Event (SSE)</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<footer>
+  <span>Base URL API:</span>
+  <input id="baseUrl" value="http://localhost:8000">
+  <span class="muted">— pastikan backend jalan (<span class="mono">uvicorn app.main:app --port 8000</span>)</span>
+</footer>
+
+<script>
+"use strict";
+
+/* ── element refs ─────────────────────────────────────────────── */
+const $ = (id) => document.getElementById(id);
+const promptEl = $("prompt"), btnStart = $("btnStart"), btnReset = $("btnReset");
+const baseUrlEl = $("baseUrl"), runBadge = $("runBadge"), runIdEl = $("runId");
+const stepBody = $("stepBody"), stepEmpty = $("stepEmpty"), stepCount = $("stepCount");
+const logEl = $("log"), flashEl = $("flash");
+const interaction = $("interaction"), interactionContent = $("interactionContent");
+
+/* ── state ────────────────────────────────────────────────────── */
+let runId = null;
+const steps = new Map();      // index -> step display object
+let busy = false;
+let pendingAction = null;     // {type: 'approval'|'input', index, reasons, fields}
+
+/* ── example prompts ──────────────────────────────────────────── */
+const EXAMPLES = [
+  { label: "📧 Kirim email (butuh approval?)", text: "Kirim email ke john@example.com bilang hello" },
+  { label: "💸 Pembayaran (risiko tinggi)", text: "Kirim pembayaran 50000 ke partner via stripe" },
+  { label: "🌐 Buka YouTube", text: "Buka youtube.com lalu cari video tentang AI" },
+  { label: "📄 Baca file", text: "Baca file sample.txt" },
+  { label: "🔐 Login (sanitize password?)", text: "Login ke github.com dengan password <password>" },
+];
+
+/* ── SSE consumer ─────────────────────────────────────────────── */
+async function startRun() {
+  const prompt = promptEl.value.trim();
+  if (!prompt) { flash("Isi perintah dulu!"); return; }
+  if (busy) return;
+  resetRun();
+  setBusy(true);
+
+  const url = baseUrlEl.value.trim().replace(/\/+$/, "") + "/api/v1/chat/execute/stream";
+  log("run_started", "Menghubungkan ke " + url);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      log("error", "HTTP " + resp.status + ": " + (txt.slice(0, 300) || resp.statusText));
+      setRunStatus("error");
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        handleFrame(frame);
+      }
+    }
+  } catch (err) {
+    log("error", "Koneksi gagal: " + err.message +
+      " — pastikan backend jalan & CORS aktif (lihat footer).");
+    setRunStatus("error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function handleFrame(raw) {
+  if (!raw.trim() || raw.trim().startsWith(":")) return; // heartbeat / comment
+  let eventName = "message";
+  let dataStr = "";
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event:")) eventName = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataStr += line.slice(5).trim() + "\n";
+  }
+  if (!dataStr.trim()) return;
+  let msg;
+  try { msg = JSON.parse(dataStr.trim()); } catch { return; }
+  if (msg.run_id && !runId) { runId = msg.run_id; runIdEl.textContent = "run: " + runId; }
+  dispatch(msg.type || eventName, msg.data || {});
+}
+
+function dispatch(type, data) {
+  switch (type) {
+    case "run_started": setRunStatus("running"); log("run_started", "Run dimulai"); break;
+    case "planning": log("planning", "LLM menyusun rencana…"); break;
+    case "plan": onPlan(data); break;
+    case "guardrail": onGuardrail(data); break;
+    case "step_status": onStepStatus(data); break;
+    case "executing": onExecuting(data); break;
+    case "step_result": onStepResult(data); break;
+    case "awaiting_approval": onAwaitingApproval(data); break;
+    case "awaiting_input": onAwaitingInput(data); break;
+    case "replanning": log("replanning", "Replan #" + (data.iteration || "?") + " — LLM memutuskan langkah berikutnya…"); break;
+    case "done": setRunStatus(data.status || "done"); log("done", "Run selesai ✅"); break;
+    case "error": setRunStatus("error"); log("error", "Error: " + (data.message || "?")); break;
+    default: log(type, JSON.stringify(data).slice(0, 300));
+  }
+}
+
+/* ── event handlers ───────────────────────────────────────────── */
+function onPlan(data) {
+  const plan = data.plan || [];
+  for (const s of plan) steps.set(s.index, { ...s });
+  renderSteps();
+  const summary = (data.summary || "").trim();
+  log("plan", "Rencana: " + plan.length + " step" + (summary ? " — " + summary : ""));
+  for (const s of plan) {
+    log("plan", "  #" + s.index + " " + (s.action_type || "?") +
+      " @" + (s.target_system || "?") + (s.domain ? " [domain=" + s.domain + "]" : ""));
+  }
+}
+
+function onGuardrail(data) {
+  const s = steps.get(data.index);
+  if (s) { s.decision = data.decision; s.risk_level = data.risk_level; s.reasons = data.reasons; }
+  renderSteps();
+  log("guardrail", "Step #" + data.index + " → keputusan: " + data.decision +
+    " (risk=" + (data.risk_level || "?") + ", skor=" + (data.risk_score ?? "?") + ")" +
+    (data.reasons && data.reasons.length ? " · alasan: " + data.reasons.join(", ") : ""));
+}
+
+function onStepStatus(data) {
+  const s = steps.get(data.index);
+  if (s) s.status = data.status;
+  renderSteps();
+  log("step_status", "Step #" + data.index + " → " + data.status);
+}
+
+function onExecuting(data) {
+  const idxs = Array.isArray(data.index) ? data.index : [data.index];
+  log("executing", "Eksekusi step #" + idxs.join(", #") +
+    " [" + (data.target_system || "?") + "]" +
+    (data.url ? " — " + data.url : "") +
+    (data.actions && data.actions.length ? " · " + data.actions.length + " aksi" : ""));
+}
+
+function onStepResult(data) {
+  const idxs = Array.isArray(data.index) ? data.index : [data.index];
+  for (const i of idxs) {
+    const s = steps.get(i);
+    if (s) { s.status = data.status === "SUCCESS" ? "done" : "failed"; s.result = data.result_summary; }
+  }
+  renderSteps();
+  const ok = data.status === "SUCCESS";
+  log("step_result", (ok ? "✅" : "❌") + " Step #" + idxs.join(", #") + " → " + data.status +
+    (data.result_summary ? " — " + data.result_summary : ""));
+  if (data.observation) log("step_result", "  observasi: " + data.observation);
+}
+
+function onAwaitingApproval(data) {
+  const s = steps.get(data.index);
+  if (s) s.status = "waiting_approval";
+  setRunStatus("waiting_approval");
+  renderSteps();
+  pendingAction = { type: "approval", index: data.index, reasons: data.reasons || [] };
+  renderInteraction();
+  log("awaiting_approval", "Step #" + data.index + " MENUNGGU persetujuanmu.");
+}
+
+function onAwaitingInput(data) {
+  const s = steps.get(data.index);
+  if (s) s.status = "waiting_input";
+  setRunStatus("waiting_input");
+  renderSteps();
+  pendingAction = { type: "input", index: data.index, fields: data.fields || [] };
+  renderInteraction();
+  log("awaiting_input", "Step #" + data.index + " MENUNGGU input darimu (sanitize).");
+}
+
+/* ── UI rendering ─────────────────────────────────────────────── */
+const STATUS_LABEL = {
+  pending: "⏳ pending", running: "⚙️ running", waiting_approval: "🟡 perlu approval",
+  waiting_input: "🟠 perlu input", approved: "✅ approved", declined: "🚫 declined",
+  done: "✅ done", failed: "❌ failed", blocked: "⛔ blocked", skipped: "➖ skipped",
+};
+
+function renderSteps() {
+  const list = [...steps.values()].sort((a, b) => a.index - b.index);
+  stepCount.textContent = list.length;
+  stepEmpty.style.display = list.length ? "none" : "block";
+  stepBody.innerHTML = list.map((s) => {
+    const payload = s.payload && typeof s.payload === "object"
+      ? Object.entries(s.payload).map(([k, v]) => k + "=" + JSON.stringify(v)).join(", ") : "";
+    const detailBits = [];
+    if (s.decision) detailBits.push("keputusan: " + s.decision);
+    if (s.risk_level) detailBits.push("risk: " + s.risk_level);
+    if (s.result) detailBits.push("hasil: " + s.result);
+    if (payload) detailBits.push("payload: {" + payload + "}");
+    return `<tr class="${s.status}">
+      <td class="st mono">${s.index}</td>
+      <td class="st"><b>${escapeHtml(s.action_type || "?")}</b></td>
+      <td class="st mono">${escapeHtml(s.target || s.target_system || "-")}</td>
+      <td class="st"><span class="step-status ${s.status}">${STATUS_LABEL[s.status] || s.status}</span></td>
+      <td class="detail">${detailBits.map(escapeHtml).join("<br>") || "&nbsp;"}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderInteraction() {
+  if (!pendingAction) { interaction.classList.remove("visible"); return; }
+  interaction.classList.add("visible");
+  const p = pendingAction;
+  if (p.type === "approval") {
+    interactionContent.innerHTML = `
+      <div class="interaction-box approval">
+        <div class="interaction-title">Step #${p.index} menunggu persetujuan</div>
+        <div class="interaction-sub">Guardrail menilai langkah ini berisiko (NEED_APPROVAL).</div>
+        <div class="reasons">${(p.reasons || []).map((r) => `<span class="reason">${escapeHtml(r)}</span>`).join("")}</div>
+        <div class="actions" style="margin:0">
+          <button class="btn-approve" onclick="sendRespond('approve')">✔ Approve</button>
+          <button class="btn-decline" onclick="sendRespond('decline')">✖ Decline</button>
+        </div>
+      </div>`;
+  } else {
+    const fields = (p.fields && p.fields.length) ? p.fields : [{ key: "value", label: "Nilai" }];
+    interactionContent.innerHTML = `
+      <div class="interaction-box input">
+        <div class="interaction-title">Step #${p.index} butuh input kamu (sanitize)</div>
+        <div class="interaction-sub">Payload berisi nilai sensitif / placeholder yang harus kamu isi.</div>
+        <div class="input-fields">
+          ${fields.map((f, i) => `
+            <label>${escapeHtml(f.label || f.key)}${fields.length > 1 ? "" : ""}</label>
+            <input id="inp-${i}" type="password" placeholder="${escapeHtml(f.key)}" autocomplete="off">
+          `).join("")}
+        </div>
+        <div class="actions" style="margin:0">
+          <button class="btn-input" onclick="sendInput()">Kirim Input</button>
+        </div>
+      </div>`;
+  }
+}
+
+/* ── respond ──────────────────────────────────────────────────── */
+function sendRespond(action) {
+  if (!pendingAction || !runId) return;
+  const body = { step_index: pendingAction.index, action };
+  doRespond(body, action === "approve" ? "Persetujuan terkirim (approve)" : "Ditolak (decline)");
+}
+
+function sendInput() {
+  if (!pendingAction || !runId) return;
+  const fields = {};
+  const inputs = interactionContent.querySelectorAll(".input-fields input");
+  for (const inp of inputs) fields[inp.placeholder] = inp.value.trim();
+  const body = { step_index: pendingAction.index, action: "input", fields };
+  doRespond(body, "Input terkirim untuk step #" + pendingAction.index);
+}
+
+async function doRespond(body, okMsg) {
+  setBusy(true);
+  try {
+    const resp = await fetch(baseUrlEl.value.trim().replace(/\/+$/, "") +
+      "/api/v1/chat/execute/" + runId + "/respond", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await resp.json().catch(() => ({}));
+    if (!resp.ok) { log("error", "Respond gagal: HTTP " + resp.status + " — " + (j.detail || "?")); flash("Gagal: " + (j.detail || "?")); }
+    else {
+      log("awaiting_" + (body.action === "input" ? "input" : "approval"), okMsg + " → run berlanjut…");
+      pendingAction = null;
+      interaction.classList.remove("visible");
+      setRunStatus("running");
+      flash("");
+    }
+  } catch (err) {
+    log("error", "Respond error: " + err.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+/* ── misc ─────────────────────────────────────────────────────── */
+function log(type, msg) {
+  const line = document.createElement("div");
+  line.className = "log-line" + (type === "error" ? " err" : "");
+  const t = new Date().toLocaleTimeString("id-ID", { hour12: false });
+  line.innerHTML = `<span class="log-time">${t}</span><span class="log-type t-${type}">${type}</span><span class="log-msg">${escapeHtml(msg)}</span>`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setRunStatus(status) {
+  runBadge.className = "badge " + (status || "");
+  runBadge.innerHTML = `<span class="dot"></span> ${status || "idle"}`;
+}
+
+function setBusy(b) {
+  busy = b;
+  btnStart.disabled = b;
+  btnStart.textContent = b ? "⏳ Berjalan…" : "▶ Mulai Run (SSE)";
+}
+
+function flash(msg) { flashEl.textContent = msg; }
+
+function resetRun() {
+  runId = null; runIdEl.textContent = "—";
+  steps.clear(); pendingAction = null;
+  stepBody.innerHTML = ""; stepEmpty.style.display = "block";
+  stepCount.textContent = "0"; logEl.innerHTML = "";
+  interaction.classList.remove("visible"); interactionContent.innerHTML = "";
+  flash(""); setRunStatus("idle");
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ── init ─────────────────────────────────────────────────────── */
+const chipsEl = $("chips");
+for (const ex of EXAMPLES) {
+  const chip = document.createElement("button");
+  chip.className = "chip";
+  chip.type = "button";
+  chip.textContent = ex.label;
+  chip.onclick = () => { promptEl.value = ex.text; flash(""); };
+  chipsEl.appendChild(chip);
+}
+btnStart.onclick = startRun;
+btnReset.onclick = resetRun;
+promptEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) startRun();
+});
+resetRun();
+</script>
+</body>
+</html>
