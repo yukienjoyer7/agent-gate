@@ -33,6 +33,7 @@ htmlcov/
 # Runtime artifacts
 /artifacts/audit/
 /artifacts/traces/
+/data/browser/screenshots/
 
 # IDE / OS
 .idea/
