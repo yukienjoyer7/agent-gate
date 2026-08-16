@@ -36,6 +36,72 @@ def test_answered_keys_skipped() -> None:
     assert fields == [{"key": "api_key", "label": "Api Key"}]
 
 
+def test_angle_bracket_placeholder_flagged() -> None:
+    fields = detect_sensitive_fields({"value": "<password>"})
+    assert fields == [{"key": "value", "label": "Password"}]
+
+
+def test_square_bracket_placeholder_flagged() -> None:
+    fields = detect_sensitive_fields({"value": "[password]"})
+    assert fields == [{"key": "value", "label": "Password"}]
+
+
+def test_single_brace_placeholder_flagged() -> None:
+    """Nvidia NIM emits single-brace {username} instead of {{username}}."""
+    fields = detect_sensitive_fields({"value": "{username}"})
+    assert fields == [{"key": "value", "label": "Username"}]
+
+    fields = detect_sensitive_fields({"value": "{password}"})
+    assert fields == [{"key": "value", "label": "Password"}]
+
+
+def test_angle_bracket_username_flagged() -> None:
+    fields = detect_sensitive_fields({"value": "<username>"})
+    assert fields == [{"key": "value", "label": "Username"}]
+
+
+def test_element_id_is_descriptive_not_flagged() -> None:
+    """element_id carries the DOM id of the field, not a fill-in value."""
+    payload = {"element_id": "username", "label": "Username", "value": "{username}"}
+    fields = detect_sensitive_fields(payload, action_type="BROWSER_TYPE")
+    assert fields == [{"key": "value", "label": "Username"}]
+
+
+def test_filled_login_payload_not_flagged() -> None:
+    payload = {"element_id": "username", "label": "Username", "value": "standard_user"}
+    assert detect_sensitive_fields(payload, action_type="BROWSER_TYPE") == []
+
+
+def test_your_password_here_flagged() -> None:
+    fields = detect_sensitive_fields({"value": "YOUR_PASSWORD_HERE"})
+    assert fields == [{"key": "value", "label": "Password"}]
+
+
+def test_your_email_here_flagged() -> None:
+    fields = detect_sensitive_fields({"value": "your email here"})
+    assert fields == [{"key": "value", "label": "Email"}]
+
+
+def test_bare_sensitive_word_flagged() -> None:
+    fields = detect_sensitive_fields({"value": "password"})
+    assert fields == [{"key": "value", "label": "Password"}]
+
+
+def test_empty_value_on_type_action_flagged() -> None:
+    fields = detect_sensitive_fields({"value": ""}, action_type="BROWSER_TYPE")
+    assert fields == [{"key": "value", "label": "Value"}]
+
+
+def test_empty_value_on_click_not_flagged() -> None:
+    assert detect_sensitive_fields({"value": ""}, action_type="BROWSER_CLICK") == []
+    assert detect_sensitive_fields({"value": ""}) == []
+
+
+def test_real_values_not_flagged() -> None:
+    assert detect_sensitive_fields({"value": "123456"}) == []
+    assert detect_sensitive_fields({"value": "jerome-pw-9x"}) == []
+
+
 def test_is_sensitive_key() -> None:
     assert is_sensitive_key("password")
     assert is_sensitive_key("API_TOKEN")
