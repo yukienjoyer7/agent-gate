@@ -58,8 +58,12 @@
   .badge.declined, .badge.cancelled { color: var(--muted); }
   @keyframes pulse { 50% { opacity: .35; } }
   .run-id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 18px 22px; max-width: 1500px; margin: 0 auto; }
-  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; padding: 18px 22px; max-width: 1500px; margin: 0 auto; }
+  /* Grid items default to min-width:auto, which lets the nowrap steps table
+     stretch the left column and squeeze the right (SSE) one. minmax(0,1fr)
+     + min-width:0 lets each column shrink so the table scrolls inside its card. */
+  main > * { min-width: 0; }
+  @media (max-width: 1000px) { main { grid-template-columns: minmax(0, 1fr); } }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
   .card h2 {
     font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
@@ -98,14 +102,14 @@
   .btn-reset { background: transparent; color: var(--muted); border: 1px dashed var(--border); }
 
   /* Steps table */
-  .steps-wrap { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .steps-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+  table { min-width: 100%; border-collapse: collapse; font-size: 13.5px; }
   th {
     text-align: left; color: var(--muted); font-size: 11.5px; text-transform: uppercase;
     letter-spacing: .6px; padding: 9px 12px; border-bottom: 1px solid var(--border);
     white-space: nowrap;
   }
-  td { padding: 10px 12px; border-bottom: 1px solid #20263a; vertical-align: top; }
+  td { padding: 10px 12px; border-bottom: 1px solid #20263a; vertical-align: top; white-space: nowrap; }
   tr:last-child td { border-bottom: none; }
   tr.waiting_approval { background: rgba(245, 196, 81, .07); }
   tr.waiting_input { background: rgba(255, 159, 67, .07); }
@@ -126,7 +130,7 @@
   .step-status.skipped { color: var(--gray); }
   .mono { font-family: var(--mono); }
   .muted { color: var(--muted); }
-  .detail { font-size: 12px; color: var(--muted); max-width: 420px; word-break: break-word; }
+  .detail { font-size: 12px; color: var(--muted); }
   .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 26px 10px; }
 
   /* Interaction panel */
@@ -502,6 +506,10 @@ function sendInput() {
 }
 
 async function doRespond(body, okMsg) {
+  // Snapshot of what we are answering — the SSE stream may deliver the NEXT
+  // awaiting_input/awaiting_approval (e.g. step #2 wants the password) while
+  // this fetch is in flight. We must not hide that newer panel.
+  const answered = pendingAction ? { type: pendingAction.type, index: pendingAction.index } : null;
   setBusy(true);
   try {
     const resp = await fetch(baseUrlEl.value.trim().replace(/\/+$/, "") +
@@ -514,9 +522,18 @@ async function doRespond(body, okMsg) {
     if (!resp.ok) { log("error", "Respond gagal: HTTP " + resp.status + " — " + (j.detail || "?")); flash("Gagal: " + (j.detail || "?")); }
     else {
       log("awaiting_" + (body.action === "input" ? "input" : "approval"), okMsg + " → run berlanjut…");
-      pendingAction = null;
-      interaction.classList.remove("visible");
-      setRunStatus("running");
+      const same = answered && pendingAction &&
+        pendingAction.type === answered.type && pendingAction.index === answered.index;
+      if (same) {
+        // No newer interaction arrived — safe to close the panel.
+        pendingAction = null;
+        interaction.classList.remove("visible");
+        setRunStatus("running");
+      } else if (pendingAction) {
+        // A newer awaiting event replaced the one we answered: keep its panel
+        // visible and the run badge in the waiting state.
+        setRunStatus(pendingAction.type === "approval" ? "waiting_approval" : "waiting_input");
+      }
       flash("");
     }
   } catch (err) {
