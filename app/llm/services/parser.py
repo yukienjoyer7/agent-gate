@@ -159,7 +159,17 @@ Rules:
 - payload for local_file: {{"action": "read", "path": "..."}}
 - target: full URL for browser, recipient address for gmail, owner/repo for github, file path for local_file.
 - Always prepend https:// to bare domains.
-- Keep the plan as short as the instruction requires (single API_CALL/FILE_READ step for connectors)."""
+- Keep the plan as short as the instruction requires (single API_CALL/FILE_READ step for connectors).
+- NEVER invent or guess values for passwords, tokens, API keys, PINs, OTPs, or any other secret.
+  For such fields emit a "{{field_name}}" placeholder (e.g. "{{password}}"), or leave the value
+  empty — the run pauses and asks the user for the real value before executing.
+- risk_hint "external_send" is ONLY for API_CALL / connector steps that transmit data to a
+  third-party system (e.g. gmail send, stripe payment). Typing into or clicking on a page the
+  user asked to open (BROWSER_TYPE / BROWSER_CLICK / BROWSER_OPEN / BROWSER_SCROLL) is NOT
+  external_send — use "unknown" for those.
+- Only emit BROWSER_SCREENSHOT when the user explicitly asks for a screenshot or image capture.
+  Never add screenshot steps for observation — the get_accessibility_tree tool already returns the
+  page elements you need."""
 
 
 TOOLS_SYSTEM_PROMPT = """
@@ -261,21 +271,7 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
     max_tool_iterations = settings.LLM_MAX_TOOL_ITERATIONS
     tools_used = False
     for _ in range(max_tool_iterations + 1):
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.2,
-            "stream": False,
-            "plugins": [{"id": "response-healing"}],
-        }
-        if settings.LLM_TOOLS_ENABLED:
-            payload["tools"] = TOOL_DEFINITIONS
-        else:
-            # JSON mode biases models to emit JSON content instead of calling
-            # tools, so only request it when no tools are being offered.
-            payload["response_format"] = {"type": "json_object"}
-
-        data, tools_rejected = await _post_chat(payload)
+        data, tools_rejected = await _post_chat(_chat_payload(model, messages, include_tools=True))
         message = _extract_message(data)
 
         tool_calls = message.get("tool_calls")
@@ -295,14 +291,27 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
         content = message.get("content")
         try:
             raw = _extract_json(content)
-        except json.JSONDecodeError as exc:
-            # Keep visibility of what the model actually returned when it is
-            # not valid JSON (the INFO log below is only emitted on success).
+        except json.JSONDecodeError:
+            # The model ignored the "return ONLY valid JSON" instruction
+            # (common with free models) and answered in plain text. Retry once
+            # with JSON mode enforced and tools dropped — the model cannot
+            # free-form its answer under response_format=json_object.
             logger.warning(
-                "OpenRouter returned non-JSON content",
-                extra={"llm_model": model, "llm_raw": content[:2000]},
+                "LLM returned non-JSON content; retrying with json_object mode",
+                extra={"llm_model": model, "llm_raw": (content or "")[:2000]},
             )
-            raise ValueError(f"LLM returned non-JSON content: {exc}") from exc
+            retry_messages = [dict(message) for message in messages]
+            # Drop the tools section from the system prompt so the model is not
+            # told to call a tool that is no longer offered (mirrors the 400
+            # fallback in the shared LLM client).
+            retry_messages[0]["content"] = _base_system_prompt()
+            data, _ = await _post_chat(_chat_payload(model, retry_messages, include_tools=False))
+            try:
+                raw = _extract_json(_extract_message(data).get("content"))
+            except json.JSONDecodeError as retry_exc:
+                raise ValueError(
+                    f"LLM returned non-JSON content after json_object retry: {retry_exc}"
+                ) from retry_exc
 
         steps = [_normalize_step(step) for step in raw.get("plan", []) if isinstance(step, dict)]
         steps = [step for step in steps if step is not None]
@@ -351,6 +360,36 @@ async def _post_chat(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     see :func:`app.llm.services.client.post_chat`.
     """
     return await post_chat(payload, fallback_system_prompt=_base_system_prompt())
+
+
+def _chat_payload(
+    model: str,
+    messages: list[dict[str, Any]],
+    include_tools: bool,
+) -> dict[str, Any]:
+    """Build the canonical planner request body.
+
+    Tools are offered only when ``include_tools`` and ``LLM_TOOLS_ENABLED``
+    are both true. Otherwise strict JSON mode (``response_format``) is
+    requested — JSON mode biases models to emit JSON content instead of
+    calling tools, so the two are never combined.
+    """
+    settings = get_settings()
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "stream": False,
+    }
+    if settings.LLM_PLUGINS:
+        # Provider-specific plugins (e.g. response-healing) — only sent
+        # when configured, since many providers reject the field.
+        payload["plugins"] = [{"id": plugin_id} for plugin_id in settings.LLM_PLUGINS]
+    if include_tools and settings.LLM_TOOLS_ENABLED:
+        payload["tools"] = TOOL_DEFINITIONS
+    else:
+        payload["response_format"] = {"type": "json_object"}
+    return payload
 
 
 def _extract_message(data: dict[str, Any]) -> dict[str, Any]:
@@ -438,6 +477,22 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
     risk_hint = str(step.get("risk_hint") or "").lower()
     if risk_hint not in rules["risk_hints"]:
         risk_hint = _derive_risk_hint(action_type, target_system, payload)
+
+    # Defensive normalisation: typing/clicking/opening a page the user asked
+    # to open is not "external_send" — that hint is reserved for connector
+    # steps that push data to a third-party system (gmail send, stripe, ...).
+    # Models frequently mislabel BROWSER_TYPE/CLICK login steps as
+    # external_send, which would wrongly force a NEED_APPROVAL pause instead
+    # of the intended user-input (sanitize) pause. BROWSER_SUBMIT/SELECT stay
+    # untouched — submitting a form genuinely transmits the data.
+    if risk_hint == "external_send" and action_type in (
+        "BROWSER_OPEN",
+        "BROWSER_TYPE",
+        "BROWSER_CLICK",
+        "BROWSER_SCROLL",
+        "BROWSER_SCREENSHOT",
+    ):
+        risk_hint = "unknown"
 
     target = (
         step.get("target")

@@ -44,11 +44,15 @@ target_system ({target_systems}), target, domain, risk_hint, payload.
 - Use the EXACT element role/label from the observation when emitting BROWSER_CLICK/TYPE steps.
 - If the goal is achieved, impossible, or needs user clarification: done=true, next_steps=null.
 - If a login is required, emit the login steps (fill username/password, submit) using the labels \
-observed on the page.
+observed on the page. Those steps are NOT "external_send" — use risk_hint "unknown" for them.
+- risk_hint "external_send" is ONLY for API_CALL / connector steps that transmit data to a
+  third-party system. Typing/clicking on a page the user asked to open is not external_send.
 - If a connector returned empty/missing data, propose a sensible fallback (different query, retry, \
 or stop with done=true).
 - Keep the batch minimal (1-3 steps). Never invent secrets — leave {{password}} style placeholders \
-in the payload when the value must come from the user."""
+in the payload when the value must come from the user.
+- Only emit BROWSER_SCREENSHOT when the user explicitly asked for a screenshot. Never add it for
+  observation — use the element labels from the observation instead."""
 
 
 async def parse_next_steps(prompt: str, context: dict[str, Any]) -> list[dict[str, Any]]:

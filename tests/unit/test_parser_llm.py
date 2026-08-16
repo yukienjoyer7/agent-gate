@@ -87,6 +87,64 @@ class TestNormalizeStep:
         )
         assert step["target_system"] == "gmail"
         assert step["domain"] == "productivity"
+        # connector sends genuinely transmit data → external_send is kept
+        assert step["risk_hint"] == "external_send"
+
+    def test_browser_login_external_send_downgraded_to_unknown(self) -> None:
+        """Models often label BROWSER_TYPE/CLICK login steps external_send,
+        which would wrongly force NEED_APPROVAL instead of a user-input
+        (sanitize) pause. Typing/clicking on a page the user asked to open is
+        not external_send → normalize to unknown."""
+        type_step = llm_parser._normalize_step(
+            {
+                "action_type": "BROWSER_TYPE",
+                "target_system": "browser",
+                "target": "https://www.saucedemo.com/",
+                "risk_hint": "external_send",
+                "payload": {"label": "Password", "value": "{password}"},
+            }
+        )
+        assert type_step is not None
+        assert type_step["risk_hint"] == "unknown"
+
+        click_step = llm_parser._normalize_step(
+            {
+                "action_type": "BROWSER_CLICK",
+                "target_system": "browser",
+                "target": "https://www.saucedemo.com/",
+                "risk_hint": "external_send",
+                "payload": {"label": "Login", "role": "button"},
+            }
+        )
+        assert click_step is not None
+        assert click_step["risk_hint"] == "unknown"
+
+        open_step = llm_parser._normalize_step(
+            {
+                "action_type": "BROWSER_OPEN",
+                "target_system": "browser",
+                "target": "https://www.saucedemo.com/",
+                "risk_hint": "external_send",
+                "payload": {"url": "https://www.saucedemo.com/"},
+            }
+        )
+        assert open_step is not None
+        assert open_step["risk_hint"] == "unknown"
+
+    def test_browser_submit_external_send_kept(self) -> None:
+        """Submitting a form transmits the data — external_send stays so the
+        guardrail can still demand approval for it."""
+        step = llm_parser._normalize_step(
+            {
+                "action_type": "BROWSER_SUBMIT",
+                "target_system": "browser",
+                "target": "https://x.dev",
+                "risk_hint": "external_send",
+                "payload": {"label": "Send"},
+            }
+        )
+        assert step is not None
+        assert step["risk_hint"] == "external_send"
 
     def test_domain_derived_from_target_system(self) -> None:
         """LLM omitting domain must not silently downgrade guardrail risk."""
@@ -554,6 +612,148 @@ class TestLlmPlanPipeline:
         ]
         assert result["plan"][1]["payload"]["value"] == "jerome"
         assert result["plan"][2]["payload"]["delay_ms"] == 2000
+
+    def test_retries_with_json_object_mode_when_content_not_json(self, monkeypatch) -> None:
+        """Model answering in plain text → one retry with json_object (no tools)."""
+        calls: list[dict] = []
+
+        async def fake_post(self, url, json=None, headers=None):
+            calls.append(json)
+            if len(calls) == 1:
+                # The model ignores the "return ONLY JSON" instruction and
+                # answers in plain text (the reported "Expecting value" bug).
+                return _Resp(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": (
+                                        "**Ringkasan singkat**  \n"
+                                        "Sanitasi adalah proses ... (teks bebas)"
+                                    ),
+                                }
+                            }
+                        ]
+                    }
+                )
+            return _Resp(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    '{"plan": [{"action_type": "BROWSER_OPEN", '
+                                    '"target_system": "browser", '
+                                    '"target": "https://x.dev"}], "summary": "x"}'
+                                ),
+                            }
+                        }
+                    ]
+                }
+            )
+
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        try:
+            result = _run(llm_parser.parse_prompt_plan("lakukan apapun untuk sanitize"))
+        finally:
+            get_settings.cache_clear()
+
+        assert len(calls) == 2
+        # First attempt offered tools; retry forces JSON mode without tools.
+        assert "tools" in calls[0]
+        assert "tools" not in calls[1]
+        assert calls[1]["response_format"] == {"type": "json_object"}
+        assert result["plan"][0]["action_type"] == "BROWSER_OPEN"
+
+    def test_raises_clear_error_when_retry_also_not_json(self, monkeypatch) -> None:
+        """Both attempts non-JSON → ValueError, not a raw JSONDecodeError."""
+
+        async def fake_post(self, url, json=None, headers=None):
+            return _Resp(
+                {"choices": [{"message": {"role": "assistant", "content": "masih teks bebas"}}]}
+            )
+
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        try:
+            with pytest.raises(ValueError, match="non-JSON content after json_object retry"):
+                _run(llm_parser.parse_prompt_plan("lakukan apapun untuk sanitize"))
+        finally:
+            get_settings.cache_clear()
+
+    def test_plugins_omitted_by_default(self, monkeypatch) -> None:
+        """The ``plugins`` field must not be sent unless LLM_PLUGINS is
+        configured — many providers reject it with invalid_request_error."""
+        calls: list[dict] = []
+
+        async def fake_post(self, url, json=None, headers=None):
+            calls.append(json)
+            return _Resp(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    '{"plan": [{"action_type": "BROWSER_OPEN", '
+                                    '"target_system": "browser", '
+                                    '"target": "https://x.dev"}], "summary": "x"}'
+                                ),
+                            }
+                        }
+                    ]
+                }
+            )
+
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
+        monkeypatch.delenv("LLM_PLUGINS", raising=False)
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        try:
+            _run(llm_parser.parse_prompt_plan("Open x.dev"))
+        finally:
+            get_settings.cache_clear()
+
+        assert "plugins" not in calls[0]
+
+    def test_plugins_sent_when_configured(self, monkeypatch) -> None:
+        """LLM_PLUGINS=response-healing → the plugins field carries that id."""
+        calls: list[dict] = []
+
+        async def fake_post(self, url, json=None, headers=None):
+            calls.append(json)
+            return _Resp(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    '{"plan": [{"action_type": "BROWSER_OPEN", '
+                                    '"target_system": "browser", '
+                                    '"target": "https://x.dev"}], "summary": "x"}'
+                                ),
+                            }
+                        }
+                    ]
+                }
+            )
+
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_PLUGINS", "response-healing")
+        get_settings.cache_clear()
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        try:
+            _run(llm_parser.parse_prompt_plan("Open x.dev"))
+        finally:
+            get_settings.cache_clear()
+
+        assert calls[0]["plugins"] == [{"id": "response-healing"}]
 
 
 class TestNoFallback:

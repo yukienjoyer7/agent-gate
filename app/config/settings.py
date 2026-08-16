@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     # Free models often explore several URLs (open page, docs, subpages) via
     # tool calls before answering; keep the cap generous but bounded.
     LLM_MAX_TOOL_ITERATIONS: int = Field(default=5, ge=1, le=10)
+    # Provider-specific request plugins (e.g. ``response-healing`` on some
+    # proxies). Empty by default: the ``plugins`` field is only sent when at
+    # least one plugin is configured, because many providers reject it with
+    # ``invalid_request_error: property 'plugins' is unsupported``.
+    LLM_PLUGINS: Annotated[list[str], NoDecode] = []
 
     # Guardrail (dedicated LLM model)
     # When enabled, the guardrail runs a second-opinion LLM review on top of
@@ -228,6 +233,7 @@ class Settings(BaseSettings):
         "GUARDRAIL_BLOCK_HINTS",
         "GUARDRAIL_NEED_APPROVAL_HINTS",
         "GUARDRAIL_ASK_USER_HINTS",
+        "LLM_PLUGINS",
         mode="before",
     )
     @classmethod
