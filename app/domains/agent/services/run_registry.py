@@ -71,9 +71,19 @@ class StepState:
 class RunSession:
     """Mutable state of one agent run, shared by the loop task and the API."""
 
-    def __init__(self, prompt: str) -> None:
+    def __init__(
+        self,
+        prompt: str,
+        *,
+        channel: str | None = None,
+        channel_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         self.run_id: str = new_id("run")
         self.prompt: str = prompt
+        self.channel: str | None = channel
+        self.channel_id: str | None = channel_id
+        self.metadata: dict[str, Any] = dict(metadata or {})
         self.status: RunStatus = RunStatus.RUNNING
         self.steps: list[StepState] = []
         self.events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -99,8 +109,15 @@ class RunRegistry:
         self._sessions: dict[str, RunSession] = {}
         self._lock = threading.Lock()
 
-    def create(self, prompt: str) -> RunSession:
-        session = RunSession(prompt)
+    def create(
+        self,
+        prompt: str,
+        *,
+        channel: str | None = None,
+        channel_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> RunSession:
+        session = RunSession(prompt, channel=channel, channel_id=channel_id, metadata=metadata)
         max_sessions = get_settings().RUN_REGISTRY_MAX_SESSIONS
         with self._lock:
             if len(self._sessions) >= max_sessions:

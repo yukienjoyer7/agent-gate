@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import actions, approvals, audits, benchmark, chat, health, oauth, runs
+from app.api.v1 import actions, approvals, audits, benchmark, chat, health, oauth, runs, telegram
 from app.config.logging import configure_logging
 from app.config.settings import get_settings
 
@@ -38,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(benchmark.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1")
     app.include_router(oauth.router, prefix="/api/v1")
+    app.include_router(telegram.router, prefix="/api/v1")
 
     @app.get("/")
     async def root() -> dict[str, str]:

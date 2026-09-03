@@ -163,6 +163,17 @@ class TestNormalizeStep:
         assert file_step["domain"] == "filesystem"
         assert file_step["risk_hint"] == "file_read"
 
+        telegram = llm_parser._normalize_step(
+            {
+                "action_type": "API_CALL",
+                "target_system": "telegram",
+                "payload": {"action": "send_message", "chat_id": "123", "text": "hello"},
+            }
+        )
+        assert telegram["target_system"] == "telegram"
+        assert telegram["domain"] == "productivity"
+        assert telegram["risk_hint"] == "external_send"
+
 
 class TestEnsureOpenStep:
     """Verify BROWSER_OPEN is prepended when needed."""
@@ -243,7 +254,7 @@ class TestParsePromptPlan:
         result = _run(llm_parser.parse_prompt_plan("Click the login button on playwright.dev"))
 
         assert "plan" in result
-        assert result["llm_provider"] == "openrouter/free"
+        assert result["llm_provider"] == get_settings().LLM_MODEL
         assert result["raw_prompt"] == "Click the login button on playwright.dev"
         assert "human_readable" in result
         assert len(result["plan"]) == 2
@@ -329,6 +340,8 @@ class TestToolCallLoop:
             return {"url": "https://playwright.dev", "count": 1, "elements": []}
 
         monkeypatch.setenv("LLM_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_TOOLS_ENABLED", "true")
+        monkeypatch.setenv("LLM_PLUGINS", "")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         monkeypatch.setattr(llm_parser, "execute_tool", fake_execute_tool)
@@ -416,6 +429,8 @@ class TestToolCallLoop:
             )
 
         monkeypatch.setenv("LLM_API_KEY", "sk-test")
+        monkeypatch.setenv("LLM_TOOLS_ENABLED", "true")
+        monkeypatch.setenv("LLM_PLUGINS", "")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         try:
@@ -460,7 +475,7 @@ class TestToolCallLoop:
 
         assert "tools" not in calls[0]
         assert calls[0]["response_format"] == {"type": "json_object"}
-        assert result["llm_provider"] == "openrouter/free"
+        assert result["llm_provider"] == get_settings().LLM_MODEL
 
     def test_retries_without_tools_when_rejected_400(self, monkeypatch) -> None:
         """Models without tool support: first request 400 → retry without tools."""
@@ -711,7 +726,7 @@ class TestLlmPlanPipeline:
             )
 
         monkeypatch.setenv("LLM_API_KEY", "sk-test")
-        monkeypatch.delenv("LLM_PLUGINS", raising=False)
+        monkeypatch.setenv("LLM_PLUGINS", "")
         get_settings.cache_clear()
         monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
         try:

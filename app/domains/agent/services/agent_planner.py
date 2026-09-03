@@ -49,6 +49,8 @@ observed on the page. Those steps are NOT "external_send" — use risk_hint "unk
   third-party system. Typing/clicking on a page the user asked to open is not external_send.
 - If a connector returned empty/missing data, propose a sensible fallback (different query, retry, \
 or stop with done=true).
+- For Telegram sends, emit action_type "API_CALL", target_system "telegram", domain "productivity", \
+risk_hint "external_send", and payload {{"action": "send_message", "chat_id": "...", "text": "..."}}.
 - Keep the batch minimal (1-3 steps). Never invent secrets — leave {{password}} style placeholders \
 in the payload when the value must come from the user.
 - Only emit BROWSER_SCREENSHOT when the user explicitly asked for a screenshot. Never add it for

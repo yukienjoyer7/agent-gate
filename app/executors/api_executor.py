@@ -3,6 +3,7 @@ from app.core.schemas import ActionRequest, ExecutionResult, ExecutionStatus
 from app.domains.connector.filesystem import LocalFileConnector
 from app.domains.connector.github import GitHubConnector
 from app.domains.connector.gmail import GmailConnector
+from app.domains.connector.telegram import TelegramConnector
 
 
 class APIExecutor:
@@ -11,6 +12,7 @@ class APIExecutor:
             "local_file": LocalFileConnector(),
             "github": GitHubConnector(),
             "gmail": GmailConnector(),
+            "telegram": TelegramConnector(),
         }
 
     async def execute(self, action: ActionRequest) -> ExecutionResult:

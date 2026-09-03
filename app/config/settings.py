@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Literal
-
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -37,6 +35,8 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: str = ""
     GMAIL_ACCESS_TOKEN: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_WEBHOOK_SECRET: str = ""
+    TELEGRAM_API_BASE: str = "https://api.telegram.org"
     XENDIT_API_KEY: str = ""
 
     # OAuth apps (GitHub OAuth App / Google Cloud OAuth client)
@@ -80,6 +80,7 @@ class Settings(BaseSettings):
         "github",
         "local_file",
         "stripe",
+        "telegram",
     ]
     ALLOWED_DOMAINS: Annotated[list[str], NoDecode] = [
         "browser",
@@ -114,6 +115,7 @@ class Settings(BaseSettings):
         "github": "code_protection",
         "local_file": "filesystem",
         "stripe": "booking",
+        "telegram": "productivity",
         "browser": "browser",
     }
     # Function calling: let the planner inspect a page's accessibility tree

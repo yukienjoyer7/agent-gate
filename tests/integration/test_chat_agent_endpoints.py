@@ -9,9 +9,10 @@ import time
 
 from fastapi.testclient import TestClient
 
+from app.core.run_schema import StepStatus
 from app.core.schemas import AuditEvent, ExecutionStatus
 from app.domains.agent.services import agent_loop
-from app.domains.agent.services.run_registry import run_registry
+from app.domains.agent.services.run_registry import StepState, run_registry
 from app.main import app
 
 client = TestClient(app)
@@ -108,12 +109,35 @@ def test_respond_404_for_unknown_run() -> None:
 
 def test_respond_rejects_fields_for_approve_action(monkeypatch) -> None:
     _install_browser_fakes(monkeypatch)
-    run_id = client.post(
-        "/api/v1/chat/execute", json={"prompt": "open example.test"}
-    ).json()["run_id"]
+    run_id = client.post("/api/v1/chat/execute", json={"prompt": "open example.test"}).json()[
+        "run_id"
+    ]
 
     response = client.post(
         f"/api/v1/chat/execute/{run_id}/respond",
         json={"step_index": 0, "action": "approve", "fields": {"x": "y"}},
     )
     assert response.status_code == 422
+
+
+def test_respond_accepts_approval_for_waiting_step() -> None:
+    run = run_registry.create("approve me")
+    run.steps.append(
+        StepState(
+            index=0,
+            data={"action_type": "API_CALL", "target_system": "telegram"},
+            action_id="act_approval_test",
+            status=StepStatus.WAITING_APPROVAL,
+        )
+    )
+
+    response = client.post(
+        f"/api/v1/chat/execute/{run.run_id}/respond",
+        json={"step_index": 0, "action": "approve"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["action"] == "approve"
+    assert run.pending_responses[0]["action"] == "approve"

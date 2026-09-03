@@ -62,6 +62,11 @@ Audit events append to `artifacts/audit/events.jsonl` by default. Action traces
 append to `artifacts/traces/actions.jsonl`. The browser path is a mock skeleton
 until the Playwright executor is hardened.
 
+## Integrations
+
+- [Telegram](./docs/integrations/telegram.md): inbound bot webhook channel and
+  outbound guarded `telegram.send_message` connector.
+
 ## Interactive chat runs (reactive agent loop)
 
 `POST /api/v1/chat/execute` now runs a **plan-then-react loop** instead of a

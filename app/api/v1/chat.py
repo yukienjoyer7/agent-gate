@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.config.settings import get_settings
 from app.core.run_schema import RunStatus
-from app.domains.agent.services.agent_loop import run_agent_loop
 from app.domains.agent.services.run_registry import run_registry
+from app.domains.agent.services.run_service import start_agent_run
 from app.llm.services import parse_prompt_plan
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ class RespondRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_input_payload(self) -> "RespondRequest":
+    def validate_input_payload(self) -> RespondRequest:
         if self.action == "input" and not self.fields and self.text is None:
             raise ValueError("input response requires 'fields' or 'text'")
         if self.action != "input" and (self.fields or self.text is not None):
@@ -134,8 +134,7 @@ async def execute_plan(request: ParseRequest) -> dict[str, Any]:
     live run state with ``GET /api/v1/chat/execute/{run_id}``, or poll
     ``GET /api/v1/runs/{run_id}/actions`` for the audit trail.
     """
-    run = run_registry.create(request.prompt)
-    run.task = asyncio.create_task(_run_with_timeout(run))
+    run = start_agent_run(request.prompt)
     return {
         "run_id": run.run_id,
         "status": run.status.value,
@@ -160,8 +159,7 @@ async def stream_execute(request: ParseRequest) -> StreamingResponse:
     stays open with heartbeat pings; call
     ``POST /api/v1/chat/execute/{run_id}/respond`` to resume it live.
     """
-    run = run_registry.create(request.prompt)
-    run.task = asyncio.create_task(_run_with_timeout(run))
+    run = start_agent_run(request.prompt)
     return StreamingResponse(
         _sse_generator(run),
         media_type="text/event-stream",
@@ -234,26 +232,6 @@ async def respond_to_step(run_id: str, request: RespondRequest) -> dict[str, Any
 # ── SSE plumbing ──────────────────────────────────────────────────
 
 
-async def _run_with_timeout(run) -> None:
-    """Run the agent loop with a hard overall deadline so a hung browser /
-    connector call cannot keep the stream open forever."""
-    timeout = get_settings().AGENT_RUN_TIMEOUT_SEC
-    try:
-        await asyncio.wait_for(run_agent_loop(run), timeout=timeout)
-    except asyncio.TimeoutError:
-        logger.warning("run timed out after %ss: %s", timeout, run.run_id)
-        run.status = RunStatus.ERROR
-        run.events.put_nowait(
-            {
-                "type": "error",
-                "data": {"run_id": run.run_id, "message": f"run timed out after {timeout}s"},
-            }
-        )
-    except asyncio.CancelledError:
-        run.status = RunStatus.CANCELLED
-        raise
-
-
 async def _sse_generator(run):
     """Drain the run's event queue into SSE frames; heartbeat while idle."""
     try:
@@ -262,7 +240,7 @@ async def _sse_generator(run):
         while True:
             try:
                 event = await asyncio.wait_for(run.events.get(), timeout=heartbeat)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 yield ": ping\n\n"
                 continue
             yield _sse_frame(event["type"], event["data"], run.run_id)
@@ -276,8 +254,15 @@ async def _sse_generator(run):
                 run.task.cancel()
                 try:
                     await run.task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+                except asyncio.CancelledError:
+                    logger.debug(
+                        "run task cancelled after SSE disconnect", extra={"run_id": run.run_id}
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "run task stopped after SSE disconnect",
+                        extra={"run_id": run.run_id, "error": str(exc)[:200]},
+                    )
 
 
 def _sse_frame(event_type: str, data: dict[str, Any], run_id: str) -> str:
@@ -359,6 +344,8 @@ async def _execute_browser(steps: list[dict[str, Any]], prompt: str) -> dict[str
 
     # ── BLOCK / NEED_APPROVAL → reject the entire plan ────────────
     if worst_decision != Decision.ALLOW:
+        assert worst_request is not None
+        assert worst_response is not None
         status = (
             ExecutionStatus.BLOCKED
             if worst_decision == Decision.BLOCK

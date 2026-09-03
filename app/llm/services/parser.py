@@ -56,6 +56,7 @@ ACTION_ALIASES: dict[str, str] = {
     "send": "BROWSER_SUBMIT",
     "select": "BROWSER_SELECT",
     "choose": "BROWSER_SELECT",
+    "search": "BROWSER_TYPE",
     "api_call": "API_CALL",
     "read": "FILE_READ",
     "read_file": "FILE_READ",
@@ -157,7 +158,11 @@ Rules:
 - payload for gmail: {{"action": "send"|"read"|"archive", "to": "...", "body": "...", "query": "..."}}
 - payload for github: {{"action": "repo_metadata", "owner": "...", "repo": "..."}}
 - payload for local_file: {{"action": "read", "path": "..."}}
-- target: full URL for browser, recipient address for gmail, owner/repo for github, file path for local_file.
+- payload for telegram: {{"action": "send_message", "chat_id": "...", "text": "..."}}
+- For Telegram sends use action_type "API_CALL", target_system "telegram", domain "productivity",
+  and risk_hint "external_send"; chat_id and text are required.
+- target: full URL for browser, recipient address for gmail, owner/repo for github, file path for local_file,
+  or chat_id for telegram.
 - Always prepend https:// to bare domains.
 - Keep the plan as short as the instruction requires (single API_CALL/FILE_READ step for connectors).
 - NEVER invent or guess values for passwords, tokens, API keys, PINs, OTPs, or any other secret.
@@ -271,22 +276,7 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
     max_tool_iterations = settings.LLM_MAX_TOOL_ITERATIONS
     tools_used = False
     for _ in range(max_tool_iterations + 1):
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.2,
-            "stream": False,
-            "plugins": [{"id": "response-healing"}],
-        }
-        if settings.LLM_TOOLS_ENABLED:
-            payload["tools"] = TOOL_DEFINITIONS
-        if settings.LLM_TYPE == "openai" and "openrouter.ai" in settings.LLM_URL:
-            payload["plugins"] = [{"id": "response-healing"}]
-        else:
-            # JSON mode biases models to emit JSON content instead of calling
-            # tools, so only request it when no tools are being offered.
-            payload["response_format"] = {"type": "json_object"}
-
+        payload = _chat_payload(model, messages, include_tools=True)
         data, tools_rejected = await _post_chat(payload)
         message = _extract_message(data)
 
@@ -329,11 +319,17 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
                     f"LLM returned non-JSON content after json_object retry: {retry_exc}"
                 ) from retry_exc
 
-        steps = [_normalize_step(step) for step in raw.get("plan", []) if isinstance(step, dict)]
-        steps = [step for step in steps if step is not None]
+        steps: list[dict[str, Any]] = []
+        for raw_step in raw.get("plan", []):
+            if not isinstance(raw_step, dict):
+                continue
+            normalized = _normalize_step(raw_step)
+            if normalized is not None:
+                steps.append(normalized)
         # Prepended BROWSER_OPEN first, then apply prompt risk to ALL final steps
         # so the navigation step also carries a BLOCK hint for destructive prompts.
         steps = _ensure_open_step(steps)
+        steps = _repair_search_prompt(steps, prompt)
         steps = _apply_prompt_risk(steps, prompt)
 
         if not steps:
@@ -415,7 +411,7 @@ def _extract_message(data: dict[str, Any]) -> dict[str, Any]:
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError(f"unexpected OpenRouter response shape: {exc}") from exc
     if not isinstance(message, dict):
-        raise ValueError("unexpected OpenRouter message shape")
+        raise TypeError("unexpected OpenRouter message shape")
     return message
 
 
@@ -473,9 +469,11 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
     if action_type not in rules["action_types"]:
         # Free models sometimes use ``action``/lowercase aliases instead of
         # the canonical action_type. Map them before rejecting the step.
-        action_type = ACTION_ALIASES.get(
-            str(step.get("action") or "").lower()
-        ) or ACTION_ALIASES.get(action_type.lower())
+        action_type = (
+            ACTION_ALIASES.get(str(step.get("action") or "").lower())
+            or ACTION_ALIASES.get(action_type.lower())
+            or ""
+        )
     target_system = str(step.get("target_system") or "browser").lower()
 
     if action_type not in rules["action_types"]:
@@ -483,6 +481,9 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
 
     payload = step.get("payload")
     payload = payload if isinstance(payload, dict) else {}
+
+    if action_type == "BROWSER_TYPE" and str(step.get("action") or "").lower() == "search":
+        _fill_search_payload(payload, step)
 
     # Derive the domain from target_system when the LLM omits it, so guardrail
     # risk levels stay correct (mirrors settings.DOMAIN_BY_TARGET_SYSTEM).
@@ -561,10 +562,93 @@ def _derive_risk_hint(action_type: str, target_system: str, payload: dict[str, A
         return "file_read"
     if target_system == "gmail" and payload.get("action") == "send":
         return "external_send"
+    if target_system == "telegram" and payload.get("action") == "send_message":
+        return "external_send"
     # Form submits with a label are treated as external_send (NEED_APPROVAL).
     if action_type in ("BROWSER_SUBMIT", "BROWSER_SELECT") and payload.get("label"):
         return "external_send"
     return "unknown"
+
+
+def _fill_search_payload(payload: dict[str, Any], step: dict[str, Any]) -> None:
+    query = payload.get("value") or payload.get("query") or step.get("query")
+    payload.setdefault("element_id", "search_query")
+    payload.setdefault("label", "Search")
+    payload.setdefault("role", "combobox")
+    if query:
+        payload.setdefault("value", str(query))
+
+
+def _repair_search_prompt(steps: list[dict[str, Any]], prompt: str) -> list[dict[str, Any]]:
+    if any(step.get("action_type") == "BROWSER_TYPE" for step in steps):
+        return steps
+
+    query = _extract_search_query(prompt)
+    if not query:
+        return steps
+
+    target = _first_browser_target(steps)
+    if not target:
+        return steps
+
+    type_step = {
+        "source": "chat",
+        "domain": "browser",
+        "action_type": "BROWSER_TYPE",
+        "target_system": "browser",
+        "target": target,
+        "risk_hint": "unknown",
+        "payload": {
+            "url": target,
+            "element_id": "search_query",
+            "label": "Search",
+            "role": "combobox",
+            "value": query,
+        },
+    }
+    submit_step = {
+        "source": "chat",
+        "domain": "browser",
+        "action_type": "BROWSER_SUBMIT",
+        "target_system": "browser",
+        "target": target,
+        "risk_hint": "external_send",
+        "payload": {
+            "url": target,
+            "element_id": "search_query",
+            "label": "Search",
+            "role": "combobox",
+            "delay_ms": 2000,
+        },
+    }
+
+    insert_at = next(
+        (
+            index
+            for index, step in enumerate(steps)
+            if step.get("action_type") == "BROWSER_SCREENSHOT"
+        ),
+        len(steps),
+    )
+    return [*steps[:insert_at], type_step, submit_step, *steps[insert_at:]]
+
+
+def _extract_search_query(prompt: str) -> str:
+    match = re.search(r"\bsearch(?:\s+for)?\s+(.+?)(?:,?\s+and\b|,|$)", prompt, re.IGNORECASE)
+    if not match:
+        return ""
+    query = match.group(1).strip()
+    query = re.sub(r"\s+", " ", query)
+    return query.strip(" .")
+
+
+def _first_browser_target(steps: list[dict[str, Any]]) -> str:
+    for step in steps:
+        if step.get("target_system") == "browser":
+            target = str(step.get("target") or (step.get("payload") or {}).get("url") or "")
+            if target:
+                return target
+    return ""
 
 
 def _ensure_open_step(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
