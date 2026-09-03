@@ -271,7 +271,23 @@ async def _llm_plan(prompt: str) -> dict[str, Any]:
     max_tool_iterations = settings.LLM_MAX_TOOL_ITERATIONS
     tools_used = False
     for _ in range(max_tool_iterations + 1):
-        data, tools_rejected = await _post_chat(_chat_payload(model, messages, include_tools=True))
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.2,
+            "stream": False,
+            "plugins": [{"id": "response-healing"}],
+        }
+        if settings.LLM_TOOLS_ENABLED:
+            payload["tools"] = TOOL_DEFINITIONS
+        if settings.LLM_TYPE == "openai" and "openrouter.ai" in settings.LLM_URL:
+            payload["plugins"] = [{"id": "response-healing"}]
+        else:
+            # JSON mode biases models to emit JSON content instead of calling
+            # tools, so only request it when no tools are being offered.
+            payload["response_format"] = {"type": "json_object"}
+
+        data, tools_rejected = await _post_chat(payload)
         message = _extract_message(data)
 
         tool_calls = message.get("tool_calls")
