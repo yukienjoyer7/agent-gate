@@ -1,0 +1,802 @@
+[
+  {
+    "element_id": "1",
+    "role": "link",
+    "label": "Skip to main content",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "skipToContent_fXgn",
+      "text": "Skip to main content",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "#__docusaurus_skipToContent_fallback",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "2",
+    "role": "link",
+    "label": "Playwright logo Playwright",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "navbar__brand",
+      "text": "Playwright",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "3",
+    "role": "link",
+    "label": "Docs",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "navbar__item navbar__link",
+      "text": "Docs",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/docs/intro",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "4",
+    "role": "link",
+    "label": "API",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "navbar__item navbar__link",
+      "text": "API",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/docs/api/class-playwright",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "5",
+    "role": "button",
+    "label": "Node.js",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "navbar__link",
+      "text": "Node.js",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "#",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "6",
+    "role": "link",
+    "label": "GitHub repository",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "navbar__item navbar__link header-github-link",
+      "text": null,
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": "GitHub repository",
+      "test_id": null,
+      "href": "https://github.com/microsoft/playwright",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "7",
+    "role": "link",
+    "label": "Discord server",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "navbar__item navbar__link header-discord-link",
+      "text": null,
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": "Discord server",
+      "test_id": null,
+      "href": "https://aka.ms/playwright/discord",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "8",
+    "role": "button",
+    "label": "Switch between dark and light mode (currently system mode)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "button",
+      "id": null,
+      "class": "clean-btn toggleButton_gllP",
+      "text": null,
+      "name": null,
+      "title": "system mode",
+      "placeholder": null,
+      "aria_label": "Switch between dark and light mode (currently system mode)",
+      "test_id": null,
+      "href": null,
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "9",
+    "role": "button",
+    "label": "Search (Control+k)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "button",
+      "id": null,
+      "class": "DocSearch DocSearch-Button",
+      "text": "Search\nCtrl\nK",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": "Search (Control+k)",
+      "test_id": null,
+      "href": null,
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "10",
+    "role": "link",
+    "label": "TypeScript",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": "TypeScript",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://playwright.dev/docs/intro",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "11",
+    "role": "link",
+    "label": "Get started",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "getStarted_Sjon",
+      "text": "Get started",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/docs/intro",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "12",
+    "role": "link",
+    "label": "Star microsoft/playwright on GitHub",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "gh-btn",
+      "text": "Star",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": "Star microsoft/playwright on GitHub",
+      "test_id": null,
+      "href": "https://github.com/microsoft/playwright",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "13",
+    "role": "link",
+    "label": "92k+ stargazers on GitHub",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "gh-count",
+      "text": "92k+",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": "92k+ stargazers on GitHub",
+      "test_id": null,
+      "href": "https://github.com/microsoft/playwright/stargazers",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "14",
+    "role": "link",
+    "label": "Testing documentation",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": "Testing documentation",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/docs/intro",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "15",
+    "role": "link",
+    "label": "CLI documentation",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": "CLI documentation",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/docs/getting-started-cli",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "16",
+    "role": "link",
+    "label": "MCP documentation",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": "MCP documentation",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/docs/getting-started-mcp",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "17",
+    "role": "link",
+    "label": "Model Context Protocol",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": "Model Context Protocol",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://modelcontextprotocol.io",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "18",
+    "role": "link",
+    "label": "Test generator",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": "Test generator",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "docs/codegen",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "19",
+    "role": "link",
+    "label": "Trace Viewer",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": "Trace Viewer",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "docs/trace-viewer-intro",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "20",
+    "role": "link",
+    "label": "VS Code extension",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": "VS Code extension",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "docs/getting-started-vscode",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "21",
+    "role": "link",
+    "label": "Bing",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": null,
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://bing.com",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "22",
+    "role": "link",
+    "label": "Outlook",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": null,
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://outlook.com",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "23",
+    "role": "link",
+    "label": "Disney+ Hotstar",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": null,
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://www.hotstar.com/",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "24",
+    "role": "link",
+    "label": "Material UI",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": null,
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://github.com/mui-org/material-ui",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "25",
+    "role": "link",
+    "label": "Adobe",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": null,
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://github.com/adobe/spectrum-web-components",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "26",
+    "role": "link",
+    "label": "React Navigation",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": null,
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://github.com/react-navigation/react-navigation",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "27",
+    "role": "link",
+    "label": "Accessibility Insights",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "",
+      "text": null,
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://accessibilityinsights.io/",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "28",
+    "role": "link",
+    "label": "Getting started",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "Getting started",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/docs/intro",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "29",
+    "role": "link",
+    "label": "Playwright Training(opens in new tab)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "Playwright Training",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://learn.microsoft.com/en-us/training/modules/build-with-playwright/",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "30",
+    "role": "link",
+    "label": "Learn Videos",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "Learn Videos",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/community/learn-videos",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "31",
+    "role": "link",
+    "label": "Feature Videos",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "Feature Videos",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/community/feature-videos",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "32",
+    "role": "link",
+    "label": "Stack Overflow(opens in new tab)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "Stack Overflow",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://stackoverflow.com/questions/tagged/playwright",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "33",
+    "role": "link",
+    "label": "Discord(opens in new tab)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "Discord",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://aka.ms/playwright/discord",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "34",
+    "role": "link",
+    "label": "X(opens in new tab)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "X",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://x.com/playwrightweb",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "35",
+    "role": "link",
+    "label": "LinkedIn(opens in new tab)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "LinkedIn",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://www.linkedin.com/company/playwrightweb",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "36",
+    "role": "link",
+    "label": "GitHub(opens in new tab)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "GitHub",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://github.com/microsoft/playwright",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "37",
+    "role": "link",
+    "label": "YouTube(opens in new tab)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "YouTube",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://www.youtube.com/channel/UC46Zj8pDH5tDosqm1gd7WTg",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "38",
+    "role": "link",
+    "label": "Blog(opens in new tab)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "Blog",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://dev.to/playwright",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "39",
+    "role": "link",
+    "label": "Ambassadors",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "Ambassadors",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "/community/ambassadors",
+      "visible": true,
+      "disabled": false
+    }
+  },
+  {
+    "element_id": "40",
+    "role": "link",
+    "label": "Microsoft Privacy Statement(opens in new tab)",
+    "risk_hint": "low_risk",
+    "dom": {
+      "tag": "a",
+      "id": null,
+      "class": "footer__link-item",
+      "text": "Microsoft Privacy Statement",
+      "name": null,
+      "title": null,
+      "placeholder": null,
+      "aria_label": null,
+      "test_id": null,
+      "href": "https://go.microsoft.com/fwlink/?LinkId=521839",
+      "visible": true,
+      "disabled": false
+    }
+  }
+]

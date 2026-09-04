@@ -1,0 +1,3 @@
+AgentGate demo file.
+
+This file is safe to read in the local_file_read Sprint 1 demo.

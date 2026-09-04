@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Change Report — SANITIZE &amp; ASK_USER Decision Flows</title>
+<style>
+  @page { size: A4 portrait; margin: 10mm 13mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    background: #ffffff; color: #1e293b;
+    font-size: 10.5px; line-height: 1.45;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  h1 { font-size: 17px; color: #0f172a; letter-spacing: -0.3px; margin-bottom: 2px; }
+  .sub { color: #64748b; font-size: 10px; margin-bottom: 12px; }
+  h2 {
+    font-size: 12.5px; color: #1d4ed8; margin: 14px 0 6px;
+    padding-bottom: 3px; border-bottom: 2px solid #e2e8f0; letter-spacing: -0.2px;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 4px 0; }
+  th { background: #f1f5f9; color: #334155; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; padding: 4px 8px; border: 1px solid #e2e8f0; }
+  td { padding: 4px 8px; border: 1px solid #e2e8f0; font-size: 10px; vertical-align: top; }
+  td code, li code, p code { font-family: Consolas, "Courier New", monospace; font-size: 9.3px; background: #f1f5f9; border-radius: 4px; padding: 1px 4px; color: #0f172a; }
+  ul { margin: 4px 0 4px 18px; }
+  li { font-size: 10px; padding: 1.5px 0; }
+  .box {
+    border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin: 6px 0;
+    background: #f8fafc; page-break-inside: avoid;
+  }
+  .box b { color: #0f172a; }
+  .sem { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 6px 0; }
+  .sem div { border-left: 3px solid #2563eb; padding: 4px 8px; background: #f8fafc; border-radius: 4px; font-size: 9.8px; }
+  .sem b { color: #1d4ed8; }
+  .cmd { font-family: Consolas, "Courier New", monospace; font-size: 9.3px; background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 6px 10px; margin: 4px 0; display: block; white-space: pre-wrap; }
+  .status-ok { color: #15803d; font-weight: 700; }
+  .footer { margin-top: 14px; border-top: 1px solid #e2e8f0; padding-top: 6px; color: #94a3b8; font-size: 9px; }
+</style>
+</head>
+<body>
+  <h1>AgentGate Change Report</h1>
+  <div class="sub">Add SANITIZE and ASK_USER decision flows &middot; schema_version 0.1 &middot; 2026-08-14</div>
+
+  <h2>1. Files changed</h2>
+  <table>
+    <tr><th>File</th><th>Change</th></tr>
+    <tr><td><code>app/core/action_schema.py</code></td><td>Added <code>SANITIZED</code> and <code>WAITING_USER</code> to <code>ExecutionStatus</code></td></tr>
+    <tr><td><code>app/executors/router.py</code></td><td>Extended <code>ExecutionRouter.route()</code> with <code>approved</code>/<code>use_sanitized</code> transitions + new <code>decision_to_execution_status()</code> helper</td></tr>
+    <tr><td><code>app/domains/guardrail/decision/simple.py</code></td><td><code>decide()</code> now produces <code>SANITIZE</code> (secret redaction) and <code>ASK_USER</code> (hint-based) decisions</td></tr>
+    <tr><td><code>app/domains/agent/services/browser_prototype_agent.py</code></td><td><code>_skipped_execution()</code> reuses the shared status mapping (no more generic <code>SKIPPED</code> for the new decisions)</td></tr>
+    <tr><td><code>app/api/v1/chat.py</code></td><td>Multi-step browser plan guard now rejects on <b>all</b> non-ALLOW decisions (was only <code>BLOCK</code>/<code>NEED_APPROVAL</code>)</td></tr>
+    <tr><td><code>tests/unit/test_decision_flows.py</code></td><td><b>New</b> &mdash; 13 tests covering all five decision paths</td></tr>
+    <tr><td><code>tests/unit/test_chat_execute_guard.py</code></td><td>+2 tests: browser plans with <code>SANITIZE</code>/<code>ASK_USER</code> steps never reach Playwright</td></tr>
+  </table>
+
+  <h2>2. What changed &amp; why</h2>
+  <ul>
+    <li><b>Decision model</b> &mdash; <code>Decision</code> already contained all five values and <code>DecisionResponse</code> already had <code>sanitized_payload</code>/<code>sensitive_entities</code>, so no duplicate fields were added. <code>ASK_USER</code> communicates <i>why/what's missing</i> through the existing <code>reasons</code> list.</li>
+    <li><b>State machine</b> &mdash; followed the existing implicit state machine (<code>ExecutionRouter</code> + the browser agent's skipped-result helper) rather than building a new one. <code>route()</code> now enforces the full contract: ALLOW executes; BLOCK never executes; NEED_APPROVAL only after <code>approved=True</code>; SANITIZE returns a <code>SANITIZED</code> preview unless <code>use_sanitized=True</code>, in which case the <b>sanitized payload</b> is substituted via <code>model_copy</code> &mdash; the original unsafe payload is never passed to the executor; ASK_USER returns <code>WAITING_USER</code> and never executes (the loop continues when the user's response produces an updated <code>ActionRequest</code>).</li>
+    <li><b>Decision triggers</b> &mdash; <code>decide()</code> gained priority-ordered paths: <code>BLOCK</code> &gt; <code>SANITIZE</code> (recursive regex redaction of <code>sk-&hellip;</code> keys, AWS/GitHub tokens, <code>password=</code>-style credentials) &gt; <code>ASK_USER</code> (hints: <code>ambiguous_target</code>, <code>missing_target</code>, <code>clarification_needed</code>) &gt; <code>NEED_APPROVAL</code> &gt; <code>ALLOW</code>. <code>next_step</code> now emits <code>sanitize</code>/<code>ask_user</code>/<code>approval_queue</code>/<code>execute</code>.</li>
+    <li><b>Executor safety</b> &mdash; fixed the two entry points that would have executed <code>SANITIZE</code>/<code>ASK_USER</code> actions: <code>ExecutionRouter</code> and the chat multi-step plan guard. BrowserPlanner &rarr; BrowserPlan &rarr; SelectorResolver &rarr; BrowserExecutor &rarr; Playwright is untouched; existing <code>goto</code>/<code>click</code>/<code>fill</code>/<code>scroll</code>/<code>screenshot</code>/<code>wait</code> behavior is unchanged. Gmail/GitHub/local-file connectors are untouched and inherit the same decision semantics through <code>run_guarded_action</code>.</li>
+    <li><b>Audit &amp; traces</b> &mdash; no schema change needed: <code>audit_logs.decision_json</code>/<code>execution_json</code> (JSONB) capture the original request, decision, <code>reasons</code>, <code>sensitive_entities</code>, <code>sanitized_payload</code>, and the final execution status; <code>execution_status</code> is <code>String(32)</code>, which fits <code>SANITIZED</code>/<code>WAITING_USER</code>. <code>ActionTrace</code> already embeds the decision/execution dicts, so traces like <code>{"decision": "SANITIZE", "execution_status": "WAITING_USER"}</code> flow through automatically.</li>
+  </ul>
+
+  <h2>3. Database migration</h2>
+  <div class="box"><b>None required.</b> All new information lives in existing JSONB columns; the status column's <code>String(32)</code> accommodates the new values. The database was not manually modified.</div>
+
+  <h2>4. Tests added / modified</h2>
+  <ul>
+    <li><b>New</b> <code>tests/unit/test_decision_flows.py</code> (13 tests): ALLOW executes; BLOCK never executes; NEED_APPROVAL pending &rarr; approved executes / rejected doesn't; SANITIZE produces a redacted payload and never executes the original (executes sanitized on <code>use_sanitized</code>); ASK_USER returns <code>WAITING_USER</code> with clarification reasons, then an updated request re-runs the decision and executes; status-mapping coverage; end-to-end <code>run_guarded_action</code> short-circuit checks.</li>
+    <li><b>Modified</b> <code>tests/unit/test_chat_execute_guard.py</code> (+2): secret-bearing and ambiguous browser plans are rejected with <code>SANITIZED</code>/<code>WAITING_USER</code> before Playwright.</li>
+  </ul>
+
+  <h2>5. Test commands</h2>
+  <pre class="cmd">python -m pytest tests/unit/test_decision_flows.py tests/unit/test_chat_execute_guard.py -q
+python -m pytest -q   # full suite
+python -m ruff check app/executors/router.py app/domains/guardrail/decision/simple.py app/api/v1/chat.py tests/unit/test_decision_flows.py tests/unit/test_chat_execute_guard.py</pre>
+  <p>Full suite: <span class="status-ok">133 passed</span>, 1 skipped (Playwright-dependent test). The <b>7 remaining failures are pre-existing</b> &mdash; verified by stashing the changes and re-running: identical failures in <code>test_audit_model_registration.py</code>, <code>test_recovery.py</code>, and <code>test_parser_llm.py</code> (network/LLM-dependent).</p>
+
+  <h2>6. Remaining limitations</h2>
+  <ul>
+    <li><b>No approval UI</b>: the approval transition is implemented in <code>route(approved=True)</code> and tested, but there is no approve/reject endpoint &mdash; <code>GET /approvals</code> still just lists pending items.</li>
+    <li><b>No ASK_USER/SANITIZE orchestration loop</b>: <code>run_guarded_action</code> returns the <code>WAITING_USER</code>/<code>SANITIZED</code> state; a caller (e.g. the chat flow) must build an updated <code>ActionRequest</code> and re-run &mdash; demonstrated in tests, not wired into a UI/API endpoint.</li>
+    <li><b>Sensitive detection is rule-based</b> (regex over payload strings); it covers common secret formats only.</li>
+  </ul>
+
+  <h2>7. Preserved semantic distinctions</h2>
+  <div class="sem">
+    <div><b>ALLOW</b> = execute now (may still fail at execution)</div>
+    <div><b>BLOCK</b> = never execute</div>
+    <div><b>NEED_APPROVAL</b> = execute only after explicit approval</div>
+    <div><b>SANITIZE</b> = modify/sanitize payload before deciding whether to execute</div>
+    <div><b>ASK_USER</b> = clarification/information is required before proceeding</div>
+  </div>
+  <div class="box">SANITIZE is never conflated with BLOCK, and ASK_USER is never conflated with NEED_APPROVAL.</div>
+
+  <div class="footer">Generated from the AgentGate codebase &middot; companion to docs/service-contracts-workflow.pdf &middot; schema_version 0.1</div>
+</body>
+</html>

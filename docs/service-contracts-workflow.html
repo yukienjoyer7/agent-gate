@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AgentGate Service Contract Workflow</title>
+<style>
+  @page { size: A4 portrait; margin: 8mm 12mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    background: #ffffff;
+    color: #1e293b;
+    font-size: 10px;
+    line-height: 1.3;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .page { max-width: 100%; zoom: 0.88; }
+
+  /* Header */
+  .header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+  .logo {
+    width: 40px; height: 40px; border-radius: 10px; flex: 0 0 40px;
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 15px; letter-spacing: 0.5px;
+  }
+  .header h1 { font-size: 19px; color: #0f172a; letter-spacing: -0.3px; }
+  .header .sub { color: #64748b; font-size: 10px; margin-top: 2px; }
+  .chain-banner {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 6px 12px; margin-bottom: 8px; font-family: Consolas, "Courier New", monospace;
+    font-size: 11px; color: #0f172a; flex-wrap: wrap;
+  }
+  .chain-banner b { color: #2563eb; font-weight: 700; }
+
+  /* Stage card */
+  .stage { display: flex; gap: 12px; margin-bottom: 2px; }
+  .badge {
+    width: 30px; height: 30px; border-radius: 50%; flex: 0 0 30px;
+    color: #fff; font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+    margin-top: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.12);
+  }
+  .card {
+    flex: 1; border: 1.5px solid; border-radius: 10px; padding: 7px 12px 8px;
+    background: #fff; box-shadow: 0 1px 3px rgba(15,23,42,0.07);
+    page-break-inside: avoid;
+  }
+  .card .top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 2px; }
+  .card h2 { font-size: 14px; font-weight: 700; letter-spacing: -0.2px; }
+  .card .role { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; padding: 2px 8px; border-radius: 999px; color: #fff; white-space: nowrap; }
+  .card .desc { color: #475569; font-size: 9.5px; margin-bottom: 4px; }
+  .fields {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 1px 14px;
+    background: #f8fafc; border: 1px solid #eef2f7; border-radius: 8px; padding: 5px 10px;
+  }
+  .field { display: flex; gap: 6px; font-size: 9px; align-items: baseline; }
+  .field code { font-family: Consolas, "Courier New", monospace; color: #0f172a; font-size: 8.5px; white-space: nowrap; }
+  .field span { color: #64748b; font-size: 9.5px; }
+  .field.wide { grid-column: 1 / -1; }
+
+  /* Colors per stage */
+  .s1 .badge, .s1 .role { background: #64748b; } .s1 .card { border-color: #94a3b8; } .s1 h2 { color: #334155; }
+  .s2 .badge, .s2 .role { background: #2563eb; } .s2 .card { border-color: #60a5fa; } .s2 h2 { color: #1d4ed8; }
+  .s3 .badge, .s3 .role { background: #d97706; } .s3 .card { border-color: #fbbf24; } .s3 h2 { color: #b45309; }
+  .s4 .badge, .s4 .role { background: #16a34a; } .s4 .card { border-color: #4ade80; } .s4 h2 { color: #15803d; }
+  .s5 .badge, .s5 .role { background: #7c3aed; } .s5 .card { border-color: #a78bfa; } .s5 h2 { color: #6d28d9; }
+  .s6 .badge, .s6 .role { background: #0f172a; } .s6 .card { border-color: #475569; } .s6 h2 { color: #0f172a; }
+
+  /* Arrow connector */
+  .arrow { display: flex; flex-direction: column; align-items: center; margin: 1px 0 3px 15px; color: #94a3b8; }
+  .arrow .line { width: 2px; height: 8px; background: #cbd5e1; }
+  .arrow .head { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 7px solid #cbd5e1; }
+  .arrow .label { font-size: 9px; color: #64748b; margin-bottom: 2px; font-weight: 600; }
+
+  /* Decision branch under guardrail */
+  .branch { display: flex; gap: 8px; margin: 5px 0 0 42px; }
+  .chip {
+    flex: 1; border: 1px solid #e2e8f0; border-radius: 8px; padding: 4px 8px;
+    background: #f8fafc; font-size: 9.5px; text-align: center;
+  }
+  .chip b { display: block; font-size: 9.5px; margin-bottom: 1px; }
+  .chip.allow b { color: #15803d; } .chip.pending b { color: #b45309; } .chip.block b { color: #b91c1c; }
+  .chip.sanitize b { color: #7c3aed; } .chip.ask b { color: #2563eb; }
+
+  /* Footer */
+  .footer {
+    margin-top: 10px; border-top: 1px solid #e2e8f0; padding-top: 8px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px;
+  }
+  .footer h3 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: #64748b; margin-bottom: 4px; }
+  .footer ul { list-style: none; }
+  .footer li { font-size: 9.8px; color: #334155; padding: 1px 0; }
+  .footer code { font-family: Consolas, "Courier New", monospace; font-size: 9px; background: #f1f5f9; border-radius: 4px; padding: 1px 4px; }
+  .note { margin-top: 8px; font-size: 9.5px; color: #94a3b8; text-align: center; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <div class="logo">AG</div>
+    <div>
+      <h1>AgentGate Service Contracts</h1>
+      <div class="sub">Guarded action runtime chain &middot; schema_version 0.1 &middot; every record carries <code>run_id</code> / <code>action_id</code></div>
+    </div>
+  </div>
+
+  <div class="chain-banner">
+    raw_tool_call <b>&rarr;</b> ActionRequest <b>&rarr;</b> DecisionResponse <b>&rarr;</b> ExecutionResult <b>&rarr;</b> AuditEvent <b>&rarr;</b> ActionTrace
+  </div>
+
+  <!-- 1. Raw tool call -->
+  <div class="stage s1">
+    <div class="badge">1</div>
+    <div class="card">
+      <div class="top"><h2>Raw Tool Call</h2><div class="role">Input</div></div>
+      <div class="desc">Unstructured output from the LLM / agent &mdash; the starting point of every guarded action.</div>
+      <div class="fields">
+        <div class="field"><code>user_goal</code><span>the user's original intent</span></div>
+        <div class="field"><code>tool_call</code><span>raw model tool name + args</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><div class="label">normalize</div><div class="line"></div><div class="head"></div></div>
+
+  <!-- 2. ActionRequest -->
+  <div class="stage s2">
+    <div class="badge">2</div>
+    <div class="card">
+      <div class="top"><h2>ActionRequest</h2><div class="role">Normalize</div></div>
+      <div class="desc">Canonical, validated action record that everything downstream keys off. <b>app/core/action_schema.py</b></div>
+      <div class="fields">
+        <div class="field"><code>schema_version</code><span>&quot;0.1&quot;</span></div>
+        <div class="field"><code>run_id / action_id</code><span>correlation ids</span></div>
+        <div class="field"><code>action_type</code><span>e.g. file_read</span></div>
+        <div class="field"><code>domain / source</code><span>e.g. productivity / cli</span></div>
+        <div class="field"><code>target_system</code><span>system being acted on</span></div>
+        <div class="field"><code>target</code><span>str or dict</span></div>
+        <div class="field"><code>payload_summary</code><span>safe summary</span></div>
+        <div class="field"><code>payload</code><span>excluded from JSON</span></div>
+        <div class="field"><code>browser_element</code><span>optional</span></div>
+        <div class="field"><code>risk_hint</code><span>heuristic risk</span></div>
+        <div class="field"><code>rollback_available</code><span>bool</span></div>
+        <div class="field"><code>confidence</code><span>0.0&ndash;1.0</span></div>
+        <div class="field wide"><code>content_context</code><span>page/selection context for LLM decisions &nbsp;&middot;&nbsp; <code>created_at</code></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow"><div class="label">guardrail decision</div><div class="line"></div><div class="head"></div></div>
+
+  <!-- 3. DecisionResponse -->
+  <div class="stage s3">
+    <div class="badge">3</div>
+    <div class="card">
+      <div class="top"><h2>DecisionResponse</h2><div class="role">Guardrail</div></div>
+      <div class="desc">Policy/risk verdict on the action before anything is executed. <b>app/core/action_schema.py</b></div>
+      <div class="fields">
+        <div class="field"><code>decision</code><span>ALLOW / BLOCK / NEED_APPROVAL / SANITIZE / ASK_USER</span></div>
+        <div class="field"><code>risk_level / risk_score</code><span>LOW&ndash;CRITICAL / 0&ndash;1</span></div>
+        <div class="field"><code>reasons</code><span>human-readable rationale</span></div>
+        <div class="field"><code>triggered_policies</code><span>policy ids hit</span></div>
+        <div class="field"><code>sensitive_entities</code><span>detected PII etc.</span></div>
+        <div class="field"><code>sanitized_payload</code><span>when SANITIZE</span></div>
+        <div class="field"><code>next_step</code><span>execute / approval_queue / sanitize / ask_user</span></div>
+        <div class="field"><code>latency_ms</code><span>decision time</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="branch">
+    <div class="chip allow"><b>ALLOW</b>proceed to execution &rarr;</div>
+    <div class="chip pending"><b>NEED_APPROVAL</b>pending, halt until approved</div>
+    <div class="chip block"><b>BLOCK</b>action rejected, never execute</div>
+    <div class="chip sanitize"><b>SANITIZE</b>redact payload, then confirm</div>
+    <div class="chip ask"><b>ASK_USER</b>clarification required, no execution</div>
+  </div>
+  <div class="arrow"><div class="label">execute (permitted decisions only)</div><div class="line"></div><div class="head"></div></div>
+
+  <!-- 4. ExecutionResult -->
+  <div class="stage s4">
+    <div class="badge">4</div>
+    <div class="card">
+      <div class="top"><h2>ExecutionResult</h2><div class="role">Execute</div></div>
+      <div class="desc">Outcome produced by a concrete executor (browser, file, API&hellip;). <b>app/core/executor_schema.py</b></div>
+      <div class="fields">
+        <div class="field"><code>executor</code><span>which executor ran</span></div>
+        <div class="field"><code>status</code><span>SUCCESS / FAILED / SKIPPED / BLOCKED / PENDING_APPROVAL / SANITIZED / WAITING_USER</span></div>
+        <div class="field"><code>result_summary</code><span>short outcome text</span></div>
+        <div class="field"><code>data</code><span>structured result</span></div>
+        <div class="field"><code>error</code><span>details on failure</span></div>
+        <div class="field"><code>latency_ms</code><span>execution time</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow"><div class="label">persist</div><div class="line"></div><div class="head"></div></div>
+
+  <!-- 5. AuditEvent -->
+  <div class="stage s5">
+    <div class="badge">5</div>
+    <div class="card">
+      <div class="top"><h2>AuditEvent</h2><div class="role">Audit</div></div>
+      <div class="desc">Immutable, queryable event stored for the audit trail. <b>app/core/audit_schema.py</b></div>
+      <div class="fields">
+        <div class="field"><code>audit_id</code><span>event id</span></div>
+        <div class="field"><code>run_id / action_id</code><span>correlation ids</span></div>
+        <div class="field"><code>request_json</code><span>action request snapshot</span></div>
+        <div class="field"><code>decision_json</code><span>decision snapshot</span></div>
+        <div class="field"><code>execution_json</code><span>result snapshot</span></div>
+        <div class="field"><code>execution_status</code><span>final status</span></div>
+        <div class="field"><code>error_type</code><span>when failed</span></div>
+        <div class="field"><code>policy / detector_version</code><span>&quot;policy-0.1&quot; / &quot;detector-0.1&quot;</span></div>
+        <div class="field wide"><code>latency</code><span>stage timings &nbsp;&middot;&nbsp; <code>created_at</code></span></div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><div class="label">assemble trace</div><div class="line"></div><div class="head"></div></div>
+
+  <!-- 6. ActionTrace -->
+  <div class="stage s6">
+    <div class="badge">6</div>
+    <div class="card">
+      <div class="top"><h2>ActionTrace</h2><div class="role">Trace</div></div>
+      <div class="desc">Full end-to-end record of one action: every stage captured for replay/debugging. <b>app/core/audit_schema.py</b></div>
+      <div class="fields">
+        <div class="field"><code>user_goal</code><span>original intent</span></div>
+        <div class="field"><code>run_id / action_id</code><span>correlation ids</span></div>
+        <div class="field"><code>raw_tool_call</code><span>stage 1 snapshot</span></div>
+        <div class="field"><code>action_request</code><span>stage 2 snapshot</span></div>
+        <div class="field"><code>decision</code><span>stage 3 snapshot</span></div>
+        <div class="field"><code>execution</code><span>stage 4 snapshot</span></div>
+        <div class="field"><code>audit</code><span>stage 5 snapshot</span></div>
+        <div class="field"><code>final_status</code><span>outcome</span></div>
+        <div class="field wide"><code>latency</code><span>stage timings &nbsp;&middot;&nbsp; <code>created_at</code></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div>
+      <h3>Persistence</h3>
+      <ul>
+        <li><code>artifacts/audit/events.jsonl</code> &mdash; audit events</li>
+        <li><code>artifacts/traces/actions.jsonl</code> &mdash; action traces</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Read APIs (app/api/v1)</h3>
+      <ul>
+        <li><code>GET /runs</code> &middot; <code>GET /runs/{id}/actions</code></li>
+        <li><code>GET /actions/{action_id}</code> &middot; <code>GET /audits</code></li>
+        <li><code>GET /audits/latest</code> &middot; <code>GET /approvals</code> &middot; <code>GET /benchmark</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="note">Source: docs/service-contracts.md &middot; schema files under app/core/ &middot; schema_version 0.1</div>
+
+</div>
+</body>
+</html>
