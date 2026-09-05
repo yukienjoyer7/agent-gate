@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import sys
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import actions, approvals, audits, benchmark, chat, health, oauth, runs, telegram
 from app.config.logging import configure_logging
 from app.config.settings import get_settings
+
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 logger = logging.getLogger(__name__)
 

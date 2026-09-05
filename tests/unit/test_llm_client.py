@@ -78,6 +78,15 @@ def test_to_anthropic_translates_messages_and_tools() -> None:
     }
 
 
+def test_to_gemini_uses_plain_json_function_result_for_gemini_25() -> None:
+    body = client._to_gemini(_openai_payload())
+
+    tool_result = body["input"][-1]
+    assert tool_result["type"] == "function_result"
+    assert tool_result["result"] == {"count": 1}
+    assert not isinstance(tool_result["result"], list)
+
+
 def test_from_anthropic_normalizes_text_and_tool_use() -> None:
     data = {
         "content": [

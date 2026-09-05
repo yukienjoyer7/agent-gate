@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     # "anthropic" = Anthropic Messages API — the client translates the shared
     # payload/response shape between the two).
     LLM_API_KEY: str = ""
-    LLM_TYPE: Literal["openai", "anthropic"] = "openai"
+    LLM_TYPE: Literal["openai", "anthropic", "gemini"] = "openai"
     LLM_URL: str = "https://openrouter.ai/api/v1/chat/completions"
     LLM_MODEL: str = "openrouter/free"
     LLM_TIMEOUT: float = 60.0
@@ -201,6 +201,13 @@ class Settings(BaseSettings):
     # domcontentloaded; both the planner tool (get_accessibility_tree) and the
     # executor settle this long so the snapshots they see stay consistent.
     BROWSER_SETTLE_MS: int = Field(default=2000, ge=0, le=10000)
+
+    # When True, a browser batch (consecutive BROWSER_* steps sharing a URL)
+    # writes one audit_logs row PER executed action (own action_id, shared
+    # run_id) instead of one combined row for the whole batch. Defaults to
+    # False so existing behaviour/tests are unaffected until this is opted
+    # into per environment. See docs/decisions on atomized browser audit.
+    ATOMIC_BROWSER_AUDIT: bool = False
 
     # Data & Storage
     # AUDIT_BACKEND: "postgres" (default -- action-sourced, writes to

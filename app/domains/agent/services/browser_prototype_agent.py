@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -18,7 +18,7 @@ from app.core.schemas import (
     ExecutionResult,
     ExecutionStatus,
 )
-from app.domains.audit.repositories.audit_repository_db import AuditRepositoryDB
+from app.domains.audit.repositories import get_audit_repository
 from app.domains.browser.browser_profile import DEFAULT_EXTRA_HEADERS, user_agent
 from app.domains.browser.executor import execute_action
 from app.domains.browser.selector_map.domInspector import build_execution_metadata
@@ -273,6 +273,154 @@ async def _execute_with_browser(
             )
         finally:
             await browser.close()
+
+
+async def run_browser_prototype_agent_atomic(
+    *,
+    url: str,
+    step_plan: list[tuple[dict[str, Any] | None, ActionRequest, DecisionResponse]],
+    timeout_ms: int | None = None,
+    wait_until: Literal["commit", "domcontentloaded", "load", "networkidle"] | None = None,
+    settle_ms: int = 0,
+) -> list[AuditEvent]:
+    """
+    Atomized sibling of ``run_browser_prototype_agent``: executes a batch of
+    browser steps in ONE Playwright session/navigation (same session-reuse
+    behavior as ``_execute_with_browser``) but writes ONE ``audit_logs`` row
+    PER STEP instead of one combined row for the whole batch.
+
+    ``step_plan`` is one entry per original plan step, in order::
+
+        (browser_action_or_None, request, decision)
+
+    - ``browser_action`` is the executor-shaped dict (see
+      ``plan_step_to_browser_action``), or ``None`` for steps with no
+      executable browser action (e.g. BROWSER_OPEN / BROWSER_SNAPSHOT — the
+      navigation itself IS the action for that step; it still gets its own
+      audit row recording the resulting snapshot).
+    - ``request`` / ``decision`` are the ``ActionRequest`` / ``DecisionResponse``
+      already produced for that step by the guardrail (each carries its own
+      ``action_id``; callers passing the same ``run_id`` into every
+      ``ActionRequest`` in ``step_plan`` get one row per step sharing
+      ``run_id`` for free — no special-casing needed here).
+
+    On the first action failure, every remaining step in the batch is
+    written as ``SKIPPED`` (page state after a failed action is not trusted
+    enough to keep acting on it) rather than attempted — mirroring the
+    "abort the rest of the batch" behavior of the combined path, just with
+    per-step audit visibility into exactly where it stopped.
+
+    ADDITIVE ONLY: nothing calls this yet. It does not change
+    ``run_browser_prototype_agent`` or any existing caller. Phase 2 wires
+    this into ``agent_loop._execute_browser_batch``, gated behind
+    ``settings.ATOMIC_BROWSER_AUDIT``.
+    """
+    settings = get_settings()
+    if timeout_ms is None:
+        timeout_ms = settings.BROWSER_TIMEOUT_MS
+    if wait_until is None:
+        wait_until = settings.BROWSER_WAIT_UNTIL
+
+    events: list[AuditEvent] = []
+    # Only steps with a real browser_action count toward multi-step screenshot
+    # path suffixing (mirrors `use_indexed_screenshot_paths` in
+    # `_execute_with_browser`).
+    multi_action = sum(1 for action, _, _ in step_plan if action) > 1
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(
+            headless=settings.PLAYWRIGHT_HEADLESS,
+            args=[
+                "--disable-http2",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        )
+        try:
+            page = await browser.new_page(
+                user_agent=user_agent(),
+                extra_http_headers=DEFAULT_EXTRA_HEADERS,
+            )
+            await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            if settle_ms:
+                await asyncio.sleep(settle_ms / 1000)
+
+            page_model = await _build_page_model(page)
+            batch_failed = False
+
+            for step_index, (browser_action, request, decision) in enumerate(step_plan, start=1):
+                step_started = perf_counter()
+
+                if batch_failed:
+                    execution = ExecutionResult(
+                        run_id=request.run_id,
+                        action_id=request.action_id,
+                        executor="browser_prototype_agent",
+                        status=ExecutionStatus.SKIPPED,
+                        result_summary="skipped: an earlier action in this batch failed",
+                        latency_ms=0,
+                    )
+                    events.append(await _write_audit(request, decision, execution, step_started))
+                    continue
+
+                try:
+                    if not browser_action:
+                        execution = ExecutionResult(
+                            run_id=request.run_id,
+                            action_id=request.action_id,
+                            executor="browser_prototype_agent",
+                            status=ExecutionStatus.SUCCESS,
+                            result_summary="opened page / built browser snapshot",
+                            data={
+                                "url": url,
+                                "final_url": page.url,
+                                "snapshot": page_model.snapshot,
+                            },
+                            latency_ms=int((perf_counter() - step_started) * 1000),
+                        )
+                    else:
+                        executable_action = _prepare_action(
+                            action=browser_action,
+                            page_model=page_model,
+                            action_id=request.action_id,
+                            action_index=step_index if multi_action else None,
+                        )
+                        await execute_action(page, page_model.selector_map, executable_action)
+                        delay_ms = browser_action.get("delay_ms")
+                        if delay_ms:
+                            await asyncio.sleep(delay_ms / 1000)
+                        execution = ExecutionResult(
+                            run_id=request.run_id,
+                            action_id=request.action_id,
+                            executor="browser_prototype_agent",
+                            status=ExecutionStatus.SUCCESS,
+                            result_summary=f"executed browser action: {browser_action['type']}",
+                            data={
+                                "url": url,
+                                "final_url": page.url,
+                                "action": executable_action,
+                                "snapshot": page_model.snapshot,
+                            },
+                            latency_ms=int((perf_counter() - step_started) * 1000),
+                        )
+                        await _settle_page(page, timeout_ms=timeout_ms)
+                        page_model = await _build_page_model(page)
+                except Exception as exc:  # noqa: BLE001
+                    batch_failed = True
+                    execution = ExecutionResult(
+                        run_id=request.run_id,
+                        action_id=request.action_id,
+                        executor="browser_prototype_agent",
+                        status=ExecutionStatus.FAILED,
+                        result_summary="browser prototype action failed",
+                        error=_error_payload(exc),
+                        latency_ms=int((perf_counter() - step_started) * 1000),
+                    )
+
+                events.append(await _write_audit(request, decision, execution, step_started))
+        finally:
+            await browser.close()
+
+    return events
 
 
 async def _build_page_model(page) -> BrowserPageModel:
@@ -542,7 +690,7 @@ async def _write_audit(
         "executor_ms": execution.latency_ms,
         "total_ms": int((perf_counter() - total_started) * 1000),
     }
-    return await AuditRepositoryDB().write(request, decision, execution, latency)
+    return await get_audit_repository().write(request, decision, execution, latency)
 
 
 def _payload_summary(url: str, actions: list[dict[str, Any]]) -> str:

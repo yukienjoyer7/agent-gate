@@ -35,6 +35,7 @@ from app.core.action_request import build_action_request
 from app.core.run_schema import RunStatus, StepStatus
 from app.core.schemas import (
     ActionRequest,
+    AuditEvent,
     Decision,
     DecisionResponse,
     ExecutionResult,
@@ -45,6 +46,7 @@ from app.domains.agent.services.agent_planner import parse_next_steps
 from app.domains.agent.services.browser_prototype_agent import (
     plan_step_to_browser_action,
     run_browser_prototype_agent,
+    run_browser_prototype_agent_atomic,
 )
 from app.domains.agent.services.guarded_execution import run_guarded_action
 from app.domains.agent.services.run_registry import RunSession, StepState
@@ -361,6 +363,9 @@ async def _execute_browser_batch(run: RunSession, steps: list[StepState]) -> str
         },
     )
 
+    if get_settings().ATOMIC_BROWSER_AUDIT:
+        return await _execute_browser_batch_atomic(run, steps, url, actions)
+
     error_message = ""
     try:
         event = await run_browser_prototype_agent(
@@ -408,6 +413,102 @@ async def _execute_browser_batch(run: RunSession, steps: list[StepState]) -> str
         },
     )
     return "had_failure" if not ok else "executed"
+
+
+async def _execute_browser_batch_atomic(
+    run: RunSession, steps: list[StepState], url: str, actions: list[dict[str, Any]]
+) -> str:
+    """Atomized sibling of the block above: same one-Playwright-session
+    batching, but writes ONE audit_logs row PER STEP (own action_id, shared
+    run_id) via ``run_browser_prototype_agent_atomic`` instead of one
+    combined row for the whole batch. Gated by
+    ``settings.ATOMIC_BROWSER_AUDIT`` from the caller.
+    """
+    step_plan: list[tuple[dict[str, Any] | None, ActionRequest, DecisionResponse]] = [
+        (
+            plan_step_to_browser_action(step.data),
+            _action_request(run, step),
+            _stored_decision(run, step),
+        )
+        for step in steps
+    ]
+
+    error_message = ""
+    events: list[AuditEvent] | None = None
+    try:
+        events = await run_browser_prototype_agent_atomic(
+            url=url,
+            step_plan=step_plan,
+            settle_ms=get_settings().BROWSER_SETTLE_MS,
+        )
+    except Exception as exc:
+        logger.exception("atomic browser batch failed for run %s", run.run_id)
+        error_message = str(exc)[:300]
+
+    if events is None:
+        # Navigation itself failed before any per-step row could be written
+        # (goto happens once, before the per-action loop) -- fall back to one
+        # FAILED row per step so nothing in the batch silently disappears
+        # from the audit trail.
+        for step in steps:
+            await _write_skipped_audit(
+                run,
+                step,
+                _stored_decision(run, step),
+                ExecutionStatus.FAILED,
+                f"browser batch failed before executing: {error_message}",
+            )
+            _set_status(run, step, StepStatus.FAILED)
+        run.execution_log.append(
+            {
+                "index": [step.index for step in steps],
+                "action_type": steps[0].data.get("action_type"),
+                "status": "failed",
+                "summary": error_message,
+            }
+        )
+        run.last_observation = f"error={error_message}"
+        return "had_failure"
+
+    status_map = {
+        ExecutionStatus.SUCCESS: StepStatus.DONE,
+        ExecutionStatus.FAILED: StepStatus.FAILED,
+        ExecutionStatus.SKIPPED: StepStatus.SKIPPED,
+    }
+    had_failure = False
+    for step, event in zip(steps, events):
+        step_status = status_map.get(event.execution_status, StepStatus.FAILED)
+        if step_status != StepStatus.DONE:
+            had_failure = True
+        step.status = step_status
+        step.execution = event.execution_json
+        step.audit_event = event.model_dump(mode="json")
+        _set_status(run, step, step_status)
+
+    failure_event = next((e for e in events if e.execution_status == ExecutionStatus.FAILED), None)
+    observation_event = failure_event or events[-1]
+    observation = _browser_observation(observation_event, "")
+    run.last_observation = observation
+    run.execution_log.append(
+        {
+            "index": [step.index for step in steps],
+            "action_type": steps[0].data.get("action_type"),
+            "status": "failed" if had_failure else "done",
+            "summary": observation_event.execution_json.get("result_summary", ""),
+        }
+    )
+    _emit(
+        run,
+        "step_result",
+        {
+            "run_id": run.run_id,
+            "index": [step.index for step in steps],
+            "status": observation_event.execution_status.value,
+            "result_summary": observation_event.execution_json.get("result_summary", ""),
+            "observation": observation,
+        },
+    )
+    return "had_failure" if had_failure else "executed"
 
 
 async def _execute_connector_steps(

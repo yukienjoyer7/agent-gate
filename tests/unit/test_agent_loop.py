@@ -402,6 +402,7 @@ async def test_max_steps_cap(monkeypatch):
             AGENT_WAIT_RESPONSE_TIMEOUT_SEC=5.0,
             BROWSER_SETTLE_MS=0,
             GUARDRAIL_LLM_ENABLED=False,
+            ATOMIC_BROWSER_AUDIT=False,
         ),
     )
     monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
@@ -412,3 +413,108 @@ async def test_max_steps_cap(monkeypatch):
     await asyncio.wait_for(agent_loop.run_agent_loop(run), timeout=5)
 
     assert len(run.steps) <= 3
+
+
+@pytest.mark.asyncio
+async def test_atomic_browser_audit_writes_one_row_per_step(monkeypatch):
+    """When ATOMIC_BROWSER_AUDIT is on, a multi-step browser batch writes one
+    AuditEvent per step (own action_id, shared run_id) via
+    run_browser_prototype_agent_atomic, instead of a single combined event."""
+
+    async def fake_plan(prompt):
+        open_step = _open_step()
+        click_step = {
+            **_open_step(),
+            "action_type": "BROWSER_CLICK",
+            "payload": {"selector_hint": "login button"},
+        }
+        return {
+            "plan": [open_step, click_step],
+            "llm_provider": "dummy",
+            "raw_prompt": prompt,
+            "human_readable": "",
+        }
+
+    atomic_calls: list[dict] = []
+
+    async def fake_browser_atomic(*, url, step_plan, settle_ms=0):
+        atomic_calls.append({"url": url, "step_plan": step_plan})
+        return [
+            _event(request.run_id, request.action_id, data={"final_url": url})
+            for _, request, _ in step_plan
+        ]
+
+    monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
+    monkeypatch.setattr(agent_loop, "run_browser_prototype_agent_atomic", fake_browser_atomic)
+    monkeypatch.setattr(
+        agent_loop,
+        "get_settings",
+        lambda: SimpleNamespace(
+            AGENT_MAX_STEPS=10,
+            AGENT_MAX_REPLAN=2,
+            AGENT_WAIT_RESPONSE_TIMEOUT_SEC=5.0,
+            BROWSER_SETTLE_MS=0,
+            GUARDRAIL_LLM_ENABLED=False,
+            ATOMIC_BROWSER_AUDIT=True,
+        ),
+    )
+
+    run = run_registry.create("open example and click login")
+    await asyncio.wait_for(agent_loop.run_agent_loop(run), timeout=5)
+
+    assert run.status == RunStatus.DONE
+    assert len(atomic_calls) == 1
+    step_plan = atomic_calls[0]["step_plan"]
+    assert len(step_plan) == len(run.steps) == 2
+
+    action_ids = {request.action_id for _, request, _ in step_plan}
+    run_ids = {request.run_id for _, request, _ in step_plan}
+    assert len(action_ids) == 2, "each step must get its own action_id"
+    assert run_ids == {run.run_id}, "every step shares the same run_id"
+
+    for step in run.steps:
+        assert step.status == StepStatus.DONE
+        assert step.audit_event is not None
+
+
+@pytest.mark.asyncio
+async def test_atomic_browser_audit_marks_remaining_steps_skipped_on_failure(monkeypatch):
+    """If an action mid-batch fails, run_browser_prototype_agent_atomic is
+    responsible for marking the rest SKIPPED; the loop just relays statuses."""
+
+    async def fake_plan(prompt):
+        return {
+            "plan": [_open_step(), {**_open_step(), "action_type": "BROWSER_CLICK"}],
+            "llm_provider": "dummy",
+            "raw_prompt": prompt,
+            "human_readable": "",
+        }
+
+    async def fake_browser_atomic(*, url, step_plan, settle_ms=0):
+        first_request = step_plan[0][1]
+        second_request = step_plan[1][1]
+        return [
+            _event(first_request.run_id, first_request.action_id, status=ExecutionStatus.FAILED),
+            _event(second_request.run_id, second_request.action_id, status=ExecutionStatus.SKIPPED),
+        ]
+
+    monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
+    monkeypatch.setattr(agent_loop, "run_browser_prototype_agent_atomic", fake_browser_atomic)
+    monkeypatch.setattr(
+        agent_loop,
+        "get_settings",
+        lambda: SimpleNamespace(
+            AGENT_MAX_STEPS=10,
+            AGENT_MAX_REPLAN=2,
+            AGENT_WAIT_RESPONSE_TIMEOUT_SEC=5.0,
+            BROWSER_SETTLE_MS=0,
+            GUARDRAIL_LLM_ENABLED=False,
+            ATOMIC_BROWSER_AUDIT=True,
+        ),
+    )
+
+    run = run_registry.create("open example and click login")
+    await asyncio.wait_for(agent_loop.run_agent_loop(run), timeout=5)
+
+    assert run.steps[0].status == StepStatus.FAILED
+    assert run.steps[1].status == StepStatus.SKIPPED
