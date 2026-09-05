@@ -5,6 +5,23 @@ from fastapi.testclient import TestClient
 from app.api.v1 import telegram as telegram_router
 from app.domains.agent.services.run_registry import RunSession
 from app.domains.connector.telegram.service import TelegramService
+
+
+class _MemoryContacts:
+    def __init__(self) -> None:
+        self.contacts: dict[int, dict] = {}
+
+    async def upsert(self, **kwargs):
+        self.contacts[kwargs["chat_id"]] = kwargs
+        return kwargs
+
+    async def find_by_username(self, username):
+        return []
+
+    async def find_by_display_name(self, display_name):
+        return []
+
+
 from app.main import app
 
 
@@ -24,6 +41,7 @@ def _install_service(monkeypatch, secret: str = "secret-token"):
         settings_factory=lambda: _settings(secret),
         start_run=fake_start_run,
         background_tasks=False,
+        contact_repository=_MemoryContacts(),
     )
     monkeypatch.setattr(telegram_router, "telegram_service", service)
     return created
@@ -73,6 +91,25 @@ def test_webhook_accepts_correct_secret_and_creates_run(monkeypatch) -> None:
     assert created[0].prompt == "Read sample.txt"
     assert created[0].channel == "telegram"
     assert created[0].channel_id == "123"
+
+
+def test_webhook_registers_private_contact_before_starting_run(monkeypatch) -> None:
+    _install_service(monkeypatch)
+    update = _update(text="/start")
+    update["message"]["chat"].update(
+        {"username": "rafiahmad", "first_name": "Rafi", "last_name": "Ahmad"}
+    )
+
+    response = TestClient(app).post(
+        "/api/v1/telegram/webhook",
+        headers={"X-Telegram-Bot-Api-Secret-Token": "secret-token"},
+        json=update,
+    )
+
+    contacts = telegram_router.telegram_service._contacts
+    assert response.status_code == 200
+    assert contacts.contacts[123]["display_name"] == "Rafi Ahmad"
+    assert contacts.contacts[123]["username"] == "rafiahmad"
 
 
 def test_webhook_empty_configured_secret_fails_safely(monkeypatch) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
@@ -10,6 +12,31 @@ from app.config.settings import get_settings
 from app.core.errors import ConnectorError, ConnectorErrorCode
 from app.core.schemas import ExecutionResult, ExecutionStatus
 from app.domains.connector.base import BaseConnector
+
+logger = logging.getLogger(__name__)
+
+_TELEGRAM_BOT_URL_RE = re.compile(r"(https?://[^/\s]+/bot)[^/\s]+", re.IGNORECASE)
+
+
+class _TelegramHTTPLogRedactionFilter(logging.Filter):
+    """Redact Bot API URL credentials while preserving unrelated httpx logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        sanitized = _TELEGRAM_BOT_URL_RE.sub(r"\1[REDACTED]", message)
+        if sanitized != message:
+            record.msg = sanitized
+            record.args = ()
+        return True
+
+
+def _install_httpx_telegram_redaction() -> None:
+    httpx_logger = logging.getLogger("httpx")
+    if not any(isinstance(item, _TelegramHTTPLogRedactionFilter) for item in httpx_logger.filters):
+        httpx_logger.addFilter(_TelegramHTTPLogRedactionFilter())
+
+
+_install_httpx_telegram_redaction()
 
 TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_SAFE_TEXT_LIMIT = 4000
@@ -114,12 +141,12 @@ class TelegramConnector(BaseConnector):
     ) -> ExecutionResult:
         run_id = str(payload.get("run_id") or "")
         action_id = str(payload.get("action_id") or "")
-        chat_id = payload.get("chat_id")
-        if chat_id is None or str(chat_id).strip() == "":
+        chat_id = _numeric_chat_id(payload.get("chat_id"))
+        if chat_id is None:
             return failed(
                 run_id,
                 action_id,
-                "chat_id is required",
+                "chat_id must be a numeric Telegram chat ID",
                 latency_ms=_elapsed_ms(started),
             )
 
@@ -260,6 +287,7 @@ class TelegramConnector(BaseConnector):
             api_base = (self._api_base or settings.TELEGRAM_API_BASE).rstrip("/")
             async with httpx.AsyncClient(base_url=api_base, timeout=self._timeout) as client:
                 response = await client.post(path, json=body)
+        logger.info("Telegram API request: %s -> HTTP %s", method, response.status_code)
         return _parse_response(response)
 
 
@@ -365,6 +393,18 @@ def failed(
 
 def _elapsed_ms(started: float) -> int:
     return int((perf_counter() - started) * 1000)
+
+
+def _numeric_chat_id(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        candidate = value
+    elif isinstance(value, str) and re.fullmatch(r"-?[0-9]+", value.strip()):
+        candidate = int(value.strip())
+    else:
+        return None
+    return candidate if candidate != 0 else None
 
 
 def _redact_token(message: str, token: str) -> str:

@@ -57,7 +57,19 @@ class StepState:
                 )
                 for key, value in payload.items()
             }
+            # A resolved stored profile is more useful in an approval UI than
+            # an internal chat ID. Keep the numeric address inside the live
+            # execution payload/audit, but do not expose it unnecessarily.
+            if isinstance(data.get("resolved_recipient"), dict):
+                payload.pop("chat_id", None)
             data["payload"] = payload
+        resolved_recipient = data.get("resolved_recipient")
+        if isinstance(resolved_recipient, dict):
+            data["resolved_recipient"] = {
+                key: value
+                for key, value in resolved_recipient.items()
+                if key in {"display_name", "username", "chat_type"}
+            }
         return {
             **data,
             "index": self.index,

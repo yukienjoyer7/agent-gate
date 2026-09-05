@@ -11,9 +11,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.run_schema import RunStatus, StepStatus
-from app.core.schemas import AuditEvent, ExecutionStatus
+from app.core.schemas import AuditEvent, Decision, ExecutionStatus
 from app.domains.agent.services import agent_loop
 from app.domains.agent.services.run_registry import run_registry
+from app.domains.connector.telegram.contacts import TelegramContactIdentity
+from app.domains.connector.telegram.recipient_resolver import (
+    RecipientResolution,
+    RecipientResolutionStatus,
+)
 
 
 class _FakeAuditRepo:
@@ -51,6 +56,27 @@ def _open_step(url: str = "https://example.test") -> dict:
         "risk_hint": "unknown",
         "payload": {"url": url},
     }
+
+
+def _telegram_send_step(reference: str = "Rafi Ahmad") -> dict:
+    return {
+        "action_type": "API_CALL",
+        "target_system": "telegram",
+        "target": reference,
+        "domain": "productivity",
+        "risk_hint": "external_send",
+        "payload": {"action": "send_message", "recipient": reference, "text": "halo"},
+    }
+
+
+class _FakeTelegramResolver:
+    def __init__(self, resolution: RecipientResolution) -> None:
+        self.resolution = resolution
+        self.references: list[object] = []
+
+    async def resolve(self, reference: object) -> RecipientResolution:
+        self.references.append(reference)
+        return self.resolution
 
 
 async def _wait_for(predicate, timeout: float = 3.0) -> None:
@@ -183,6 +209,137 @@ async def test_decline_stops_run(monkeypatch):
     assert run.status == RunStatus.DECLINED
     assert run.steps[0].status == StepStatus.DECLINED
     assert guarded_calls == []  # never executed
+
+
+@pytest.mark.asyncio
+async def test_resolved_telegram_recipient_waits_for_approval_then_uses_numeric_chat_id(
+    monkeypatch,
+):
+    guarded_calls: list[tuple[dict, object]] = []
+    contact = TelegramContactIdentity(
+        chat_id=123456789,
+        chat_type="private",
+        username="rafiahmad",
+        first_name="Rafi",
+        last_name="Ahmad",
+        display_name="Rafi Ahmad",
+    )
+    resolver = _FakeTelegramResolver(
+        RecipientResolution(RecipientResolutionStatus.RESOLVED, "Rafi Ahmad", contact=contact)
+    )
+
+    async def fake_plan(prompt):
+        return {"plan": [_telegram_send_step()], "llm_provider": "dummy", "raw_prompt": prompt}
+
+    async def fake_guarded(proposal, audit=None, traces=None, decision=None):
+        guarded_calls.append((proposal, decision))
+        return _event(proposal["run_id"], proposal["action_id"])
+
+    monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
+    monkeypatch.setattr(agent_loop, "TelegramRecipientResolver", lambda: resolver)
+    monkeypatch.setattr(agent_loop, "run_guarded_action", fake_guarded)
+
+    run = run_registry.create("kirim pesan telegram 'halo' ke Rafi Ahmad")
+    task = asyncio.create_task(agent_loop.run_agent_loop(run))
+    await _wait_for(lambda: run.status == RunStatus.WAITING_APPROVAL)
+
+    step = run.steps[0]
+    assert step.decision["decision"] == Decision.NEED_APPROVAL
+    assert step.data["payload"]["chat_id"] == 123456789
+    assert step.data["recipient_reference"] == "Rafi Ahmad"
+    assert step.data["resolved_recipient"]["username"] == "rafiahmad"
+    assert "chat_id" not in step.public()["payload"]
+    assert guarded_calls == []  # no connector/executor before approval
+
+    run_registry.respond(run, 0, "approve")
+    await asyncio.wait_for(task, timeout=5)
+
+    assert run.status == RunStatus.DONE
+    proposal, decision = guarded_calls[0]
+    assert proposal["payload"]["chat_id"] == 123456789
+    assert proposal["recipient_reference"] == "Rafi Ahmad"
+    assert proposal["resolved_recipient"]["display_name"] == "Rafi Ahmad"
+    assert decision.decision == Decision.ALLOW
+    assert decision.initial_decision == Decision.NEED_APPROVAL
+    assert decision.approval_decision == "approved"
+
+
+@pytest.mark.asyncio
+async def test_rejected_resolved_telegram_send_never_reaches_executor(monkeypatch):
+    guarded_calls: list[dict] = []
+    contact = TelegramContactIdentity(
+        chat_id=123456789,
+        chat_type="private",
+        username="rafiahmad",
+        first_name="Rafi",
+        last_name="Ahmad",
+        display_name="Rafi Ahmad",
+    )
+    resolver = _FakeTelegramResolver(
+        RecipientResolution(RecipientResolutionStatus.RESOLVED, "Rafi Ahmad", contact=contact)
+    )
+
+    async def fake_plan(prompt):
+        return {"plan": [_telegram_send_step()], "llm_provider": "dummy", "raw_prompt": prompt}
+
+    async def fake_guarded(proposal, audit=None, traces=None, decision=None):
+        guarded_calls.append(proposal)
+        return _event(proposal["run_id"], proposal["action_id"])
+
+    monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
+    monkeypatch.setattr(agent_loop, "TelegramRecipientResolver", lambda: resolver)
+    monkeypatch.setattr(agent_loop, "run_guarded_action", fake_guarded)
+
+    run = run_registry.create("kirim pesan telegram 'halo' ke Rafi Ahmad")
+    task = asyncio.create_task(agent_loop.run_agent_loop(run))
+    await _wait_for(lambda: run.status == RunStatus.WAITING_APPROVAL)
+    run_registry.respond(run, 0, "decline")
+    await asyncio.wait_for(task, timeout=5)
+
+    assert run.status == RunStatus.DECLINED
+    assert guarded_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "matches", "message"),
+    [
+        (RecipientResolutionStatus.NOT_FOUND, (), "belum terdaftar"),
+        (RecipientResolutionStatus.AMBIGUOUS, (), "beberapa kontak"),
+    ],
+)
+async def test_unresolved_or_ambiguous_telegram_recipient_asks_user_without_execution(
+    monkeypatch, status, matches, message
+):
+    guarded_calls: list[dict] = []
+    if status == RecipientResolutionStatus.AMBIGUOUS:
+        matches = (
+            TelegramContactIdentity(1, "private", "rafi_a", "Rafi", "Ahmad", "Rafi Ahmad"),
+            TelegramContactIdentity(2, "private", "rafi_b", "Rafi", "Ahmad", "Rafi Ahmad"),
+        )
+    resolver = _FakeTelegramResolver(RecipientResolution(status, "Rafi Ahmad", matches=matches))
+
+    async def fake_plan(prompt):
+        return {"plan": [_telegram_send_step()], "llm_provider": "dummy", "raw_prompt": prompt}
+
+    async def fake_guarded(proposal, audit=None, traces=None, decision=None):
+        guarded_calls.append(proposal)
+        return _event(proposal["run_id"], proposal["action_id"])
+
+    monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
+    monkeypatch.setattr(agent_loop, "TelegramRecipientResolver", lambda: resolver)
+    monkeypatch.setattr(agent_loop, "run_guarded_action", fake_guarded)
+
+    run = run_registry.create("kirim pesan telegram 'halo' ke Rafi Ahmad")
+    task = asyncio.create_task(agent_loop.run_agent_loop(run))
+    await _wait_for(lambda: run.status == RunStatus.WAITING_INPUT)
+
+    assert run.steps[0].decision["decision"] == Decision.ASK_USER
+    assert message in run.steps[0].decision["reasons"][0]
+    assert guarded_calls == []
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 @pytest.mark.asyncio

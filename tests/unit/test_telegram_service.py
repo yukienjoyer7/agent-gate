@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -5,6 +6,8 @@ import pytest
 from app.core.run_schema import StepStatus
 from app.core.schemas import ExecutionResult, ExecutionStatus
 from app.domains.agent.services.run_registry import RunRegistry, RunSession, StepState
+from app.domains.connector.telegram import service as telegram_service_module
+from app.domains.connector.telegram.contacts import TelegramContactIdentity
 from app.domains.connector.telegram.service import (
     TelegramService,
     TelegramWebhookAuthError,
@@ -25,6 +28,36 @@ class _FakeConnector:
             status=ExecutionStatus.SUCCESS,
             data={"message_id": 99},
         )
+
+
+class _MemoryContacts:
+    def __init__(self) -> None:
+        self.contacts: dict[int, TelegramContactIdentity] = {}
+        self.upserts = 0
+
+    async def upsert(self, **kwargs) -> TelegramContactIdentity:
+        self.upserts += 1
+        previous = self.contacts.get(kwargs["chat_id"])
+        now = datetime.now(UTC)
+        identity = TelegramContactIdentity(
+            **kwargs,
+            is_active=True,
+            first_seen_at=previous.first_seen_at if previous else now,
+            last_seen_at=now,
+        )
+        self.contacts[identity.chat_id] = identity
+        return identity
+
+    async def find_by_username(self, username):
+        return []
+
+    async def find_by_display_name(self, display_name):
+        return []
+
+
+@pytest.fixture(autouse=True)
+def _avoid_database_for_channel_tests(monkeypatch):
+    monkeypatch.setattr(telegram_service_module, "TelegramContactRepository", _MemoryContacts)
 
 
 def _settings(secret: str = "secret-token"):
@@ -134,6 +167,79 @@ async def test_text_message_creates_one_agent_run_with_channel_metadata() -> Non
     assert created[0]["metadata"]["update_id"] == 100
     assert created[0]["metadata"]["message_id"] == 10
     assert created[0]["metadata"]["user_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_inbound_private_message_registers_contact_without_agent_execution() -> None:
+    contacts = _MemoryContacts()
+    service = TelegramService(
+        connector=_FakeConnector(),
+        settings_factory=lambda: _settings(),
+        start_run=lambda prompt, **kwargs: RunSession(prompt, **kwargs),
+        background_tasks=False,
+        contact_repository=contacts,
+    )
+    update = _message_update(text="/start")
+    update["message"]["chat"].update(
+        {"username": "rafiahmad", "first_name": "Rafi", "last_name": "Ahmad"}
+    )
+
+    result = await service.handle_update(update)
+
+    assert result["status"] == "accepted"
+    contact = contacts.contacts[123]
+    assert contact.chat_id == 123
+    assert contact.chat_type == "private"
+    assert contact.username == "rafiahmad"
+    assert contact.display_name == "Rafi Ahmad"
+    assert "token" not in contact.__dict__
+
+
+@pytest.mark.asyncio
+async def test_duplicate_webhook_update_does_not_duplicate_contact_registration() -> None:
+    contacts = _MemoryContacts()
+    service = TelegramService(
+        connector=_FakeConnector(),
+        settings_factory=lambda: _settings(),
+        start_run=lambda prompt, **kwargs: RunSession(prompt, **kwargs),
+        background_tasks=False,
+        contact_repository=contacts,
+    )
+
+    await service.handle_update(_message_update(update_id=909))
+    duplicate = await service.handle_update(_message_update(update_id=909))
+
+    assert duplicate["status"] == "duplicate"
+    assert contacts.upserts == 1
+    assert len(contacts.contacts) == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_contact_profile_is_updated_on_a_later_update() -> None:
+    contacts = _MemoryContacts()
+    service = TelegramService(
+        connector=_FakeConnector(),
+        settings_factory=lambda: _settings(),
+        start_run=lambda prompt, **kwargs: RunSession(prompt, **kwargs),
+        background_tasks=False,
+        contact_repository=contacts,
+    )
+    first = _message_update(update_id=910)
+    first["message"]["chat"].update({"first_name": "Rafi", "last_name": "Ahmad"})
+    second = _message_update(update_id=911)
+    second["message"]["chat"].update(
+        {"username": "rafi_new", "first_name": "Rafi", "last_name": "Pratama"}
+    )
+
+    await service.handle_update(first)
+    first_seen = contacts.contacts[123].last_seen_at
+    await service.handle_update(second)
+
+    assert contacts.upserts == 2
+    assert contacts.contacts[123].display_name == "Rafi Pratama"
+    assert contacts.contacts[123].username == "rafi_new"
+    assert contacts.contacts[123].last_seen_at is not None
+    assert contacts.contacts[123].last_seen_at >= first_seen
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,11 @@ from app.domains.agent.services.run_registry import (
     run_registry,
 )
 from app.domains.agent.services.run_service import is_terminal, start_agent_run
+from app.domains.connector.telegram.contacts import (
+    TelegramContactRepository,
+    TelegramContactStore,
+    build_display_name,
+)
 from app.domains.connector.telegram.telegram import TelegramConnector
 
 logger = logging.getLogger(__name__)
@@ -81,6 +86,7 @@ class TelegramService:
         background_tasks: bool = True,
         poll_interval_sec: float = 0.5,
         dedupe_size: int = 1000,
+        contact_repository: TelegramContactStore | None = None,
     ) -> None:
         self._connector = connector or TelegramConnector()
         self._registry = registry
@@ -90,6 +96,7 @@ class TelegramService:
         self._poll_interval_sec = poll_interval_sec
         self._updates = BoundedDeduplicator(dedupe_size)
         self._approval_callbacks = BoundedDeduplicator(dedupe_size)
+        self._contacts = contact_repository or TelegramContactRepository()
 
     def validate_webhook_secret(self, received_secret: str | None) -> None:
         expected_secret = self._settings_factory().TELEGRAM_WEBHOOK_SECRET
@@ -123,6 +130,11 @@ class TelegramService:
             )
             return {"ok": True, "status": "ignored"}
 
+        # Registration is an inbound-channel concern, not a side effect of a
+        # later agent action. A /start message is therefore enough for the
+        # bot to learn a contact's address for future guarded sends.
+        await self._register_contact(message, update_id)
+
         inbound = _extract_text_message(message, update_id)
         if inbound is None:
             logger.info(
@@ -139,6 +151,47 @@ class TelegramService:
         if self._background_tasks:
             self._spawn(self._deliver_run_lifecycle(run, inbound))
         return {"ok": True, "status": "accepted", "run_id": run.run_id}
+
+    async def _register_contact(self, message: dict[str, Any], update_id: Any) -> None:
+        chat = message.get("chat")
+        if not isinstance(chat, dict) or chat.get("id") is None:
+            return
+        chat_id = _coerce_chat_id(chat.get("id"))
+        chat_type = chat.get("type")
+        if chat_id is None or not isinstance(chat_type, str) or not chat_type.strip():
+            logger.info(
+                "Telegram contact ignored",
+                extra={"update_id": update_id, "reason": "invalid_chat_identity"},
+            )
+            return
+
+        first_name = _optional_text(chat.get("first_name"))
+        last_name = _optional_text(chat.get("last_name"))
+        username = _optional_text(chat.get("username"))
+        display_name = build_display_name(
+            first_name,
+            last_name,
+            fallback=_optional_text(chat.get("title")) or username,
+        )
+        try:
+            await self._contacts.upsert(
+                chat_id=chat_id,
+                chat_type=chat_type.strip(),
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                display_name=display_name,
+            )
+        except Exception:  # noqa: BLE001 - registration must not block inbound processing
+            logger.warning(
+                "Telegram contact registration failed",
+                extra={"update_id": update_id, "chat_id": chat_id},
+            )
+            return
+        logger.info(
+            "Telegram contact registered",
+            extra={"update_id": update_id, "chat_id": chat_id, "chat_type": chat_type},
+        )
 
     def _create_run(self, inbound: dict[str, Any]) -> RunSession:
         metadata = {
@@ -379,6 +432,21 @@ def _extract_text_message(message: dict[str, Any], update_id: Any) -> dict[str, 
         "user_id": user_id,
         "text": text.strip(),
     }
+
+
+def _coerce_chat_id(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value != 0 else None
+    if isinstance(value, str) and re.fullmatch(r"-?[0-9]+", value.strip()):
+        parsed = int(value.strip())
+        return parsed if parsed != 0 else None
+    return None
+
+
+def _optional_text(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _parse_callback_data(data: Any) -> tuple[CallbackDecision, str, int] | None:

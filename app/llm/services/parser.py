@@ -158,11 +158,15 @@ Rules:
 - payload for gmail: {{"action": "send"|"read"|"archive", "to": "...", "body": "...", "query": "..."}}
 - payload for github: {{"action": "repo_metadata", "owner": "...", "repo": "..."}}
 - payload for local_file: {{"action": "read", "path": "..."}}
-- payload for telegram: {{"action": "send_message", "chat_id": "...", "text": "..."}}
+- payload for telegram: {{"action": "send_message", "recipient": "<name or @username>", "text": "..."}}
+  or, only when the user explicitly supplied a numeric Telegram chat ID,
+  {{"action": "send_message", "chat_id": 123456789, "text": "..."}}.
 - For Telegram sends use action_type "API_CALL", target_system "telegram", domain "productivity",
-  and risk_hint "external_send"; chat_id and text are required.
+  and risk_hint "external_send". ``recipient`` is an unresolved human-readable reference;
+  ``chat_id`` is only a numeric, explicit or runtime-resolved Telegram identifier. Never put a
+  person name, display name, or @username in ``chat_id`` and never invent a chat ID.
 - target: full URL for browser, recipient address for gmail, owner/repo for github, file path for local_file,
-  or chat_id for telegram.
+  or the recipient reference / explicit numeric chat ID for telegram.
 - Always prepend https:// to bare domains.
 - Keep the plan as short as the instruction requires (single API_CALL/FILE_READ step for connectors).
 - NEVER invent or guess values for passwords, tokens, API keys, PINs, OTPs, or any other secret.
@@ -482,6 +486,9 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
     payload = step.get("payload")
     payload = payload if isinstance(payload, dict) else {}
 
+    if target_system == "telegram" and payload.get("action") == "send_message":
+        _normalize_telegram_send_payload(payload, step)
+
     if action_type == "BROWSER_TYPE" and str(step.get("action") or "").lower() == "search":
         _fill_search_payload(payload, step)
 
@@ -518,6 +525,10 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
         or payload.get("path")
         or ""
     )
+    if target_system == "telegram" and payload.get("action") == "send_message":
+        # The target presented to the rest of AgentGate is the human reference
+        # (or an explicitly provided ID), never a name masquerading as chat_id.
+        target = payload.get("recipient") or payload.get("chat_id") or target
     if (
         isinstance(target, str)
         and target_system == "browser"
@@ -568,6 +579,40 @@ def _derive_risk_hint(action_type: str, target_system: str, payload: dict[str, A
     if action_type in ("BROWSER_SUBMIT", "BROWSER_SELECT") and payload.get("label"):
         return "external_send"
     return "unknown"
+
+
+def _normalize_telegram_send_payload(payload: dict[str, Any], step: dict[str, Any]) -> None:
+    """Make old/free-form planner output safe before it reaches the loop.
+
+    A non-numeric legacy ``chat_id`` is an unresolved recipient reference,
+    never an execution address.  Runtime resolution remains authoritative.
+    """
+    chat_id = payload.get("chat_id")
+    recipient = payload.get("recipient")
+    if chat_id is not None and not _is_numeric_telegram_chat_id(chat_id):
+        if not recipient and str(chat_id).strip():
+            payload["recipient"] = str(chat_id).strip()
+        payload.pop("chat_id", None)
+    elif chat_id is not None:
+        # Keep only canonical numeric IDs. bool is intentionally rejected.
+        payload["chat_id"] = int(str(chat_id).strip()) if not isinstance(chat_id, int) else chat_id
+
+    if not payload.get("recipient") and "chat_id" not in payload:
+        target = step.get("target")
+        if isinstance(target, str) and target.strip() and target.strip().lower() != "telegram":
+            payload["recipient"] = target.strip()
+
+
+def _is_numeric_telegram_chat_id(value: object) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, int):
+        return value != 0
+    return (
+        isinstance(value, str)
+        and bool(re.fullmatch(r"-?[0-9]+", value.strip()))
+        and int(value.strip()) != 0
+    )
 
 
 def _fill_search_payload(payload: dict[str, Any], step: dict[str, Any]) -> None:

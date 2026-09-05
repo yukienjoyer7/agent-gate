@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import httpx
 
@@ -29,7 +30,7 @@ def test_send_message_success_uses_telegram_endpoint_and_payload():
         assert request.method == "POST"
         assert request.url.path == "/bottest-token/sendMessage"
         body = json.loads(request.content.decode())
-        assert body["chat_id"] == "123"
+        assert body["chat_id"] == 123
         assert body["text"] == "hello"
         return httpx.Response(
             200,
@@ -71,6 +72,28 @@ def test_missing_chat_id_fails_validation():
     assert result.status == "FAILED"
     assert result.error["code"] == "VALIDATION"
     assert "chat_id" in result.error["message"]
+
+
+def test_unresolved_human_name_chat_id_is_rejected_without_an_http_request():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://api.telegram.test"
+        ) as client:
+            return await TelegramConnector(client, token="test-token").execute(
+                "send_message", _payload(chat_id="Rafi Ahmad")
+            )
+
+    result = _run(run())
+
+    assert result.status == "FAILED"
+    assert result.error["code"] == "VALIDATION"
+    assert requests == []
 
 
 def test_missing_text_fails_validation():
@@ -214,6 +237,30 @@ def test_token_never_appears_in_returned_errors():
     dumped = json.dumps(result.model_dump(mode="json"))
     assert token not in dumped
     assert "[REDACTED]" in dumped
+
+
+def test_token_never_appears_in_httpx_logs(caplog):
+    token = "123456:LOG-SECRET"
+    caplog.set_level(logging.INFO, logger="httpx")
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    500,
+                    request=request,
+                    text="unavailable",
+                )
+            ),
+            base_url="https://api.telegram.test",
+        ) as client:
+            return await TelegramConnector(client, token=token).execute("send_message", _payload())
+
+    result = _run(run())
+
+    assert result.status == "FAILED"
+    assert token not in caplog.text
+    assert "/bot[REDACTED]/sendMessage" in caplog.text
 
 
 def test_send_message_chunks_long_text():

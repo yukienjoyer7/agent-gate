@@ -174,6 +174,35 @@ class TestNormalizeStep:
         assert telegram["domain"] == "productivity"
         assert telegram["risk_hint"] == "external_send"
 
+    def test_telegram_human_name_becomes_recipient_not_chat_id(self) -> None:
+        step = llm_parser._normalize_step(
+            {
+                "action_type": "API_CALL",
+                "target_system": "telegram",
+                "target": "Rafi Ahmad",
+                "payload": {"action": "send_message", "chat_id": "Rafi Ahmad", "text": "halo"},
+            }
+        )
+
+        assert step is not None
+        assert step["payload"]["recipient"] == "Rafi Ahmad"
+        assert "chat_id" not in step["payload"]
+        assert step["target"] == "Rafi Ahmad"
+        assert step["risk_hint"] == "external_send"
+
+    def test_telegram_explicit_numeric_chat_id_remains_numeric(self) -> None:
+        step = llm_parser._normalize_step(
+            {
+                "action_type": "API_CALL",
+                "target_system": "telegram",
+                "payload": {"action": "send_message", "chat_id": "123456789", "text": "halo"},
+            }
+        )
+
+        assert step is not None
+        assert step["payload"]["chat_id"] == 123456789
+        assert "recipient" not in step["payload"]
+
 
 class TestEnsureOpenStep:
     """Verify BROWSER_OPEN is prepended when needed."""

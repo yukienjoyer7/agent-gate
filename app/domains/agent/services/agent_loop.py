@@ -51,6 +51,12 @@ from app.domains.agent.services.browser_prototype_agent import (
 from app.domains.agent.services.guarded_execution import run_guarded_action
 from app.domains.agent.services.run_registry import RunSession, StepState
 from app.domains.audit.repositories import get_audit_repository
+from app.domains.connector.telegram.recipient_resolver import (
+    RecipientResolution,
+    RecipientResolutionStatus,
+    TelegramRecipientResolver,
+    parse_numeric_chat_id,
+)
 from app.domains.guardrail.decision import adecide
 from app.domains.guardrail.sensitive import detect_sensitive_fields
 from app.llm.services import parse_prompt_plan
@@ -74,10 +80,9 @@ async def run_agent_loop(run: RunSession) -> None:
             outcome = await _execute_batch(run, batch)
             if outcome == "stop":
                 break
-            if outcome == "had_failure" or _all_processed(run):
-                if not await _maybe_replan(run):
-                    break
-    except Exception as exc:  # noqa: BLE001 - surface everything to the client
+            if (outcome == "had_failure" or _all_processed(run)) and not await _maybe_replan(run):
+                break
+    except Exception as exc:  # surface everything to the client
         logger.exception("agent loop failed for run %s", run.run_id)
         run.status = RunStatus.ERROR
         _emit(run, "error", {"run_id": run.run_id, "message": str(exc)[:500]})
@@ -195,8 +200,9 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
     settings = get_settings()
     while True:
         _set_status(run, step, StepStatus.RUNNING)
+        prepared_decision = await _prepare_telegram_recipient(run, step)
         request = _action_request(run, step)
-        decision = await adecide(request)
+        decision = prepared_decision or await adecide(request)
         step.decision = decision.model_dump(mode="json")
         _emit(run, "guardrail", _decision_event(run, step, decision))
 
@@ -253,6 +259,13 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
                 return None
             run.status = RunStatus.RUNNING
             if response["action"] == "decline":
+                decision = decision.model_copy(
+                    update={
+                        "initial_decision": Decision.NEED_APPROVAL,
+                        "approval_decision": "declined",
+                    }
+                )
+                step.decision = decision.model_dump(mode="json")
                 await _write_skipped_audit(
                     run, step, decision, ExecutionStatus.SKIPPED, "declined by user"
                 )
@@ -264,6 +277,8 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
             decision = decision.model_copy(
                 update={
                     "decision": Decision.ALLOW,
+                    "initial_decision": Decision.NEED_APPROVAL,
+                    "approval_decision": "approved",
                     "reasons": [*decision.reasons, "approved by user"],
                     "next_step": "execute",
                 }
@@ -306,6 +321,12 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
             run.status = RunStatus.RUNNING
             fields = response.get("fields") or {}
             text = str(fields.get("clarification") or response.get("text") or "").strip()
+            if step.data.get("telegram_resolution_pending"):
+                _apply_telegram_recipient_clarification(step, text)
+                # The replacement can be a known @username or explicit
+                # numeric chat ID. Resolve it again before any guardrail or
+                # connector call; never treat clarification itself as approval.
+                continue
             step.data["user_clarification"] = text
             step.clarified = True
             decision = decision.model_copy(
@@ -319,6 +340,126 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
             return decision
 
         return decision
+
+
+async def _prepare_telegram_recipient(run: RunSession, step: StepState) -> DecisionResponse | None:
+    """Resolve an outbound Telegram recipient before guardrail evaluation.
+
+    This is deliberately above ``ActionRequest``/approval creation. The
+    person shown in approval is therefore the exact stored identity that will
+    be sent to, rather than a display-name reference resolved after approval.
+    """
+    if step.data.get("action_type") != "API_CALL" or step.data.get("target_system") != "telegram":
+        return None
+    payload = step.data.get("payload")
+    if not isinstance(payload, dict) or payload.get("action") != "send_message":
+        return None
+
+    existing_identity = step.data.get("resolved_recipient")
+    existing_chat_id = parse_numeric_chat_id(payload.get("chat_id"))
+    if (
+        isinstance(existing_identity, dict)
+        and existing_chat_id is not None
+        and existing_identity.get("chat_id") == existing_chat_id
+    ):
+        # A sanitize/input cycle can re-enter this preparation stage. Preserve
+        # the already resolved display identity rather than replacing it with
+        # a generic numeric-ID label after approval context was established.
+        return None
+
+    chat_id = payload.get("chat_id")
+    recipient = payload.get("recipient")
+    reference: object | None = None
+
+    if chat_id is not None:
+        if parse_numeric_chat_id(chat_id) is not None:
+            # Explicit numeric IDs are supported for backward compatibility.
+            reference = chat_id
+        else:
+            # Older planner output used a name in chat_id. Reinterpret that
+            # safely as a reference; it still must be found in the registry.
+            reference = recipient if recipient is not None else chat_id
+            payload.pop("chat_id", None)
+    elif recipient is not None:
+        reference = recipient
+    else:
+        target = step.data.get("target")
+        if isinstance(target, str) and target.strip() and target.strip().lower() != "telegram":
+            reference = target
+
+    resolver = TelegramRecipientResolver()
+    resolution = await resolver.resolve(reference)
+    if resolution.status == RecipientResolutionStatus.RESOLVED and resolution.chat_id is not None:
+        payload["chat_id"] = resolution.chat_id
+        payload["recipient"] = resolution.reference
+        step.data["recipient_reference"] = resolution.reference
+        step.data["resolved_recipient"] = resolution.audit_identity()
+        step.data["target"] = resolution.display_label()
+        step.data["payload_summary"] = f"send_message to {resolution.display_label()}"
+        step.data.pop("telegram_resolution_pending", None)
+        return None
+
+    # Do not call the usual guardrail for unresolved targets. It must be an
+    # ASK_USER state, not an approval of an identity that may later change.
+    reference_text = resolution.reference or "penerima"
+    payload.pop("chat_id", None)
+    payload["recipient"] = reference_text
+    step.data["recipient_reference"] = reference_text
+    step.data.pop("resolved_recipient", None)
+    step.data["target"] = reference_text
+    step.data["telegram_resolution_pending"] = True
+    return DecisionResponse(
+        run_id=run.run_id,
+        action_id=step.action_id,
+        decision=Decision.ASK_USER,
+        reasons=[_recipient_resolution_message(resolution)],
+        triggered_policies=["telegram_recipient_resolution"],
+        next_step="ask_user",
+    )
+
+
+def _apply_telegram_recipient_clarification(step: StepState, text: str) -> None:
+    payload = step.data.setdefault("payload", {})
+    payload.pop("chat_id", None)
+    payload["recipient"] = text
+    step.data["recipient_reference"] = text
+    step.data["target"] = text or "telegram"
+    step.data.pop("resolved_recipient", None)
+    step.data.pop("telegram_resolution_pending", None)
+    step.data["telegram_recipient_clarification"] = text
+
+
+def _recipient_resolution_message(resolution: RecipientResolution) -> str:
+    reference = resolution.reference or "penerima"
+    if resolution.status == RecipientResolutionStatus.AMBIGUOUS:
+        candidates = "\n".join(
+            f"- {_recipient_candidate_label(contact)}" for contact in resolution.matches
+        )
+        return (
+            f'Ada beberapa kontak Telegram yang cocok dengan "{reference}". '
+            f"Pilih penerima yang dimaksud:\n{candidates}\n"
+            "Berikan @username yang terdaftar atau Telegram chat ID yang valid."
+        )
+    if resolution.status == RecipientResolutionStatus.UNAVAILABLE:
+        return (
+            "Registry penerima Telegram sedang tidak tersedia. Tidak ada pesan yang dikirim; "
+            "coba lagi nanti atau berikan Telegram chat ID yang valid."
+        )
+    if resolution.status == RecipientResolutionStatus.INVALID:
+        return (
+            f'Penerima Telegram "{reference}" tidak valid. Berikan @username yang terdaftar '
+            "atau Telegram chat ID yang valid."
+        )
+    return (
+        f'Penerima Telegram "{reference}" belum terdaftar. Minta penerima membuka bot '
+        "AgentGate dan menekan /start, atau berikan Telegram chat ID yang valid."
+    )
+
+
+def _recipient_candidate_label(contact: object) -> str:
+    display_name = getattr(contact, "display_name", None) or "Telegram contact"
+    username = getattr(contact, "username", None)
+    return f"{display_name} (@{username})" if username else str(display_name)
 
 
 # ── Execution ─────────────────────────────────────────────────────
@@ -378,7 +519,7 @@ async def _execute_browser_batch(run: RunSession, steps: list[StepState]) -> str
             skip_guardrail=True,
             settle_ms=get_settings().BROWSER_SETTLE_MS,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("browser batch failed for run %s", run.run_id)
         event = None
         error_message = str(exc)[:300]
@@ -535,7 +676,7 @@ async def _execute_connector_steps(
         error_message = ""
         try:
             event = await run_guarded_action(proposal, decision=decision)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("connector step failed for run %s", run.run_id)
             event = None
             error_message = str(exc)[:300]
@@ -595,7 +736,7 @@ async def _wait_for_user(run: RunSession, step: StepState, timeout: float) -> di
     run.waiters[step.index] = future
     try:
         return await asyncio.wait_for(future, timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         run.waiters.pop(step.index, None)
         run.pending_responses.pop(step.index, None)
         await _write_skipped_audit(
@@ -632,8 +773,8 @@ def _stored_decision(run: RunSession, step: StepState) -> DecisionResponse:
     if step.decision:
         try:
             return DecisionResponse.model_validate(step.decision)
-        except Exception:  # noqa: BLE001 - best-effort rehydration
-            pass
+        except ValueError as exc:  # best-effort rehydration
+            logger.debug("could not rehydrate stored decision: %s", exc)
     return DecisionResponse(
         run_id=run.run_id,
         action_id=step.action_id,

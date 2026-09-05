@@ -62,6 +62,12 @@ class ActionRequest(BaseModel):
     action_type: str
     target_system: str
     target: str | dict[str, Any]
+    # Resolution metadata is intentionally separate from ``payload``. It makes
+    # a guarded external send auditable even though connector payloads are
+    # omitted from the normal ActionRequest serialization.
+    recipient_reference: str | None = None
+    resolved_recipient: dict[str, Any] | None = None
+    user_goal: str = ""
     content_context: str = ""
     payload_summary: str = ""
     payload: dict[str, Any] = Field(default_factory=dict, exclude=True)
@@ -83,6 +89,8 @@ class DecisionResponse(BaseModel):
     triggered_policies: list[str] = Field(default_factory=list)
     sensitive_entities: list[str] = Field(default_factory=list)
     sanitized_payload: dict[str, Any] | None = None
+    initial_decision: Decision | None = None
+    approval_decision: str | None = None
     next_step: str = "execute"
     latency_ms: int = 0
     created_at: datetime = Field(default_factory=utc_now)
