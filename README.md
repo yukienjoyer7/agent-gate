@@ -34,6 +34,12 @@ uvicorn app.main:app --reload
 pytest
 ```
 
+To verify the configured database without printing credentials, run:
+
+```bash
+python scripts/check_database_connection.py
+```
+
 ## Layout
 
 | Path | Purpose |

@@ -2,14 +2,14 @@ import asyncio
 import sys
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from alembic import context
-
 from app.config.settings import get_settings
 from app.database.base import Base
+from app.database.url import asyncpg_connect_args, normalize_asyncpg_url
 
 if sys.platform == "win32":
     # psycopg's async mode cannot run on Windows' default ProactorEventLoop.
@@ -26,7 +26,12 @@ from app.database.models import AuditLog, OAuthToken  # noqa: F401
 config = context.config
 
 # Inject the runtime DATABASE_URL from app settings (keeps secrets out of alembic.ini).
-config.set_main_option("sqlalchemy.url", get_settings().DATABASE_URL)
+# asyncpg needs the same URL normalization as the runtime engine.
+settings = get_settings()
+normalized_database_url = normalize_asyncpg_url(settings.DATABASE_URL)
+config.set_main_option(
+    "sqlalchemy.url", normalized_database_url.render_as_string(hide_password=False)
+)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -79,10 +84,16 @@ async def run_async_migrations() -> None:
 
     """
 
+    engine_options = {}
+    connect_args = asyncpg_connect_args(settings.DATABASE_URL, settings.DATABASE_SSL_MODE)
+    if connect_args:
+        engine_options["connect_args"] = connect_args
+
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        **engine_options,
     )
 
     async with connectable.connect() as connection:

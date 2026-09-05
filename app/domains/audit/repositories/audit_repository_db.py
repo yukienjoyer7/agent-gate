@@ -22,7 +22,7 @@ Sourcing / design notes:
     same import site (app/domains/audit/repositories/__init__.py) --
     swapping stores should not require touching call sites.
   - Async throughout, using the existing AsyncSession from
-    app/database/session.py (already configured for postgresql+psycopg).
+    app/database/session.py.
 """
 
 from __future__ import annotations
@@ -101,8 +101,12 @@ class AuditRepositoryDB:
             latency=event.latency,
         )
         async with self._scope() as session:
-            session.add(row)
-            await session.commit()
+            try:
+                session.add(row)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
         return event
 
     async def latest(self) -> AuditEvent | None:

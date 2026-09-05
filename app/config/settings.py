@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+psycopg://agentgate:agentgate@localhost:5432/agentgate"
     DATABASE_POOL_SIZE: int = Field(default=10, ge=1, le=100)
     DATABASE_MAX_OVERFLOW: int = Field(default=20, ge=0)
+    # ``auto`` enables verified TLS for explicit URL TLS options and Neon
+    # endpoints. Set ``require`` for another remote PostgreSQL provider, or
+    # ``disable`` only for a local PostgreSQL instance that does not use TLS.
+    DATABASE_SSL_MODE: Literal["auto", "require", "disable"] = "auto"
 
     # Connector Credentials
     # Static tokens are a fallback used only when no OAuth token has been
