@@ -43,6 +43,23 @@ def test_build_authorize_url_includes_client_id_and_state(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_build_authorize_url_for_calendar_uses_calendar_scope_and_redirect(monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-client")
+    get_settings.cache_clear()
+
+    url = service.build_authorize_url("calendar")
+
+    assert "client_id=google-client" in url
+    assert "calendar.readonly" not in url
+    parsed = httpx.URL(url).params
+    assert parsed["scope"] == "https://www.googleapis.com/auth/calendar"
+    assert parsed["redirect_uri"] == get_settings().GOOGLE_CALENDAR_OAUTH_REDIRECT_URI
+    state = parsed["state"]
+    assert service._pending_states[state] == "calendar"
+
+    get_settings.cache_clear()
+
+
 def test_exchange_code_rejects_unknown_state():
     async def run():
         return await service.exchange_code("github", "code123", "bad-state", repo=FakeRepo())

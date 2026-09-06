@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # stored yet for that provider (see app/domains/oauth/service.py).
     GITHUB_TOKEN: str = ""
     GMAIL_ACCESS_TOKEN: str = ""
+    GOOGLE_CALENDAR_ACCESS_TOKEN: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_WEBHOOK_SECRET: str = ""
     TELEGRAM_API_BASE: str = "https://api.telegram.org"
@@ -59,6 +60,7 @@ class Settings(BaseSettings):
     GOOGLE_OAUTH_CLIENT_ID: str = ""
     GOOGLE_OAUTH_CLIENT_SECRET: str = ""
     GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/oauth/gmail/callback"
+    GOOGLE_CALENDAR_OAUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/oauth/calendar/callback"
 
     # LLM provider (LLM_TYPE: "openai" = OpenAI-compatible chat completions,
     # "anthropic" = Anthropic Messages API — the client translates the shared
@@ -89,6 +91,7 @@ class Settings(BaseSettings):
     ]
     ALLOWED_TARGET_SYSTEMS: Annotated[list[str], NoDecode] = [
         "browser",
+        "calendar",
         "gmail",
         "github",
         "local_file",
@@ -124,6 +127,7 @@ class Settings(BaseSettings):
     # Domain fallbacks applied when the LLM omits ``domain`` so it cannot
     # silently downgrade guardrail risk decisions.
     DOMAIN_BY_TARGET_SYSTEM: dict[str, str] = {
+        "calendar": "productivity",
         "gmail": "productivity",
         "github": "code_protection",
         "local_file": "filesystem",

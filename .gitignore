@@ -40,3 +40,4 @@ htmlcov/
 .vscode/
 .DS_Store
 .marscode/
+.aider*

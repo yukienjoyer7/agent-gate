@@ -191,6 +191,38 @@
   }
   footer input:focus { border-color: var(--blue); }
   .flash { color: var(--amber); font-weight: 600; }
+
+  /* Integration cards */
+  .integrations { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .integ-card {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 14px; border-radius: 10px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    transition: border-color .15s;
+  }
+  .integ-card:hover { border-color: var(--blue); }
+  .integ-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+    background: rgba(79, 140, 255, .12);
+  }
+  .integ-info { flex: 1; min-width: 0; }
+  .integ-name { font-size: 13.5px; font-weight: 600; }
+  .integ-status { font-size: 11.5px; display: flex; align-items: center; gap: 5px; }
+  .integ-status .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .integ-status .dot.on { background: var(--green); }
+  .integ-status .dot.off { background: var(--gray); }
+  .integ-status.on { color: var(--green); }
+  .integ-status.off { color: var(--muted); }
+  .btn-connect {
+    font-size: 12px; padding: 5px 12px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--muted); cursor: pointer; white-space: nowrap;
+    transition: all .15s;
+  }
+  .btn-connect:hover { border-color: var(--blue); color: var(--text); }
+  .btn-connect.connected { border-color: var(--green); color: var(--green); }
 </style>
 </head>
 <body>
@@ -205,6 +237,13 @@
 <main>
   <!-- LEFT: command + steps + interaction -->
   <div style="display:flex; flex-direction:column; gap:18px;">
+    <section class="card">
+      <h2>🔗 Integrasi Pihak Ketiga</h2>
+      <div class="card-body">
+        <div class="integrations" id="integrations"></div>
+      </div>
+    </section>
+
     <section class="card">
       <h2>📣 Perintah</h2>
       <div class="card-body">
@@ -580,6 +619,54 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+/* ── integrations ─────────────────────────────────────────────── */
+const PROVIDERS = [
+  { key: "github",  name: "GitHub",  icon: "🐙", path: "/api/v1/oauth/github/authorize" },
+  { key: "gmail",   name: "Gmail",   icon: "📧", path: "/api/v1/oauth/gmail/authorize" },
+  { key: "calendar", name: "Google Calendar", icon: "📅", path: "/api/v1/oauth/calendar/authorize" },
+];
+
+function renderIntegrations(statusMap) {
+  const el = $("integrations");
+  el.innerHTML = "";
+  for (const p of PROVIDERS) {
+    const st = statusMap[p.key] || {};
+    const connected = !!st.connected;
+    const card = document.createElement("div");
+    card.className = "integ-card";
+    card.innerHTML = `
+      <div class="integ-icon">${p.icon}</div>
+      <div class="integ-info">
+        <div class="integ-name">${escapeHtml(p.name)}</div>
+        <div class="integ-status ${connected ? "on" : "off"}">
+          <span class="dot ${connected ? "on" : "off"}"></span>
+          ${connected ? "Terhubung" : "Belum terhubung"}
+        </div>
+      </div>
+      <button class="btn-connect ${connected ? "connected" : ""}"
+              onclick="openAuth('${p.path}')">${connected ? "✓" : "Hubungkan"}</button>`;
+    el.appendChild(card);
+  }
+}
+
+async function fetchIntegrationStatus() {
+  try {
+    const resp = await fetch(baseUrlEl.value.trim().replace(/\/+$/, "") + "/api/v1/oauth/status");
+    if (resp.ok) {
+      renderIntegrations(await resp.json());
+    } else {
+      renderIntegrations({});
+    }
+  } catch {
+    renderIntegrations({});
+  }
+}
+
+function openAuth(path) {
+  const base = baseUrlEl.value.trim().replace(/\/+$/, "");
+  window.open(base + path, "_blank", "noopener");
+}
+
 /* ── init ─────────────────────────────────────────────────────── */
 const chipsEl = $("chips");
 for (const ex of EXAMPLES) {
@@ -596,6 +683,7 @@ promptEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) startRun();
 });
 resetRun();
+fetchIntegrationStatus();
 </script>
 </body>
 </html>

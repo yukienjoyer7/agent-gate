@@ -44,6 +44,17 @@ def _config(provider: str) -> ProviderConfig:
             # offline+consent so Google actually returns a refresh_token.
             extra_authorize_params={"access_type": "offline", "prompt": "consent"},
         )
+    if provider == "calendar":
+        return ProviderConfig(
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+    scope="https://www.googleapis.com/auth/calendar",
+            client_id=settings.GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=settings.GOOGLE_OAUTH_CLIENT_SECRET,
+            redirect_uri=settings.GOOGLE_CALENDAR_OAUTH_REDIRECT_URI,
+            # offline+consent so Google actually returns a refresh_token.
+            extra_authorize_params={"access_type": "offline", "prompt": "consent"},
+        )
     raise ValueError(f"unknown OAuth provider: {provider}")
 
 
@@ -169,4 +180,6 @@ def _fallback_token(provider: str) -> str | None:
         return settings.GITHUB_TOKEN or None
     if provider == "gmail":
         return settings.GMAIL_ACCESS_TOKEN or None
+    if provider == "calendar":
+        return settings.GOOGLE_CALENDAR_ACCESS_TOKEN or None
     return None
