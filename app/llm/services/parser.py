@@ -27,6 +27,10 @@ from typing import Any
 
 from app.config.settings import get_settings
 from app.core.browser_schema import BrowserElement
+from app.domains.connector.calendar.contract import (
+    missing_create_event_fields,
+    normalize_create_event_payload,
+)
 from app.llm.services.client import post_chat
 from app.llm.tools import TOOL_DEFINITIONS, execute_tool
 
@@ -158,6 +162,13 @@ Rules:
 - payload for gmail: {{"action": "send"|"read"|"archive", "to": "...", "body": "...", "query": "..."}}
 - payload for github: {{"action": "repo_metadata", "owner": "...", "repo": "..."}}
 - payload for local_file: {{"action": "read", "path": "..."}}
+- payload for Calendar event creation: {{"action": "create_event", "summary": "...", "start": "<ISO 8601 datetime>", "end": "<ISO 8601 datetime>", "timezone": "<optional IANA timezone>", "description": "<optional>", "location": "<optional>"}}.
+  Calendar ``create_event`` MUST use the canonical keys ``start`` and ``end``; NEVER use
+  ``start_time`` or ``end_time``. Use full ISO 8601 datetimes with an explicit offset when
+  available. Do not invent a start or end time: if either is absent, ask for clarification.
+  Example: for 'tambah event "meeting laplace #2" tanggal 13 September 2026 jam 18.00 sampai
+  19.00', emit {{"action": "create_event", "summary": "meeting laplace #2", "start":
+  "2026-09-13T18:00:00+07:00", "end": "2026-09-13T19:00:00+07:00"}}.
 - payload for stripe checkout: {{"action": "create_checkout_session", "catalog_key": "<configured catalog key>", "quantity": 1, "customer_email": "<optional>"}}
 - payload for stripe status: {{"action": "retrieve_checkout_session", "session_id": "cs_..."}}
 - payload for stripe refund: {{"action": "create_refund", "payment_intent_id": "pi_...", "amount": <optional positive integer in the currency minor unit>, "reason": "requested_by_customer"}}
@@ -492,6 +503,9 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
     payload = step.get("payload")
     payload = payload if isinstance(payload, dict) else {}
 
+    if target_system == "calendar" and payload.get("action") == "create_event":
+        payload = normalize_create_event_payload(payload)
+
     if target_system == "telegram" and payload.get("action") == "send_message":
         _normalize_telegram_send_payload(payload, step)
 
@@ -533,6 +547,15 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
             risk_hint = "payment"
         elif stripe_action == "create_refund":
             risk_hint = "refund"
+
+    if target_system == "calendar" and payload.get("action") == "create_event":
+        # Calendar writes always remain behind the existing approval policy.
+        # Missing event details use the existing ASK_USER path instead of
+        # fabricating a date or time.
+        domain = rules["domain_by_target_system"].get("calendar", "productivity")
+        risk_hint = (
+            "clarification_needed" if missing_create_event_fields(payload) else "external_send"
+        )
 
     target = (
         step.get("target")
@@ -603,6 +626,8 @@ def _derive_risk_hint(action_type: str, target_system: str, payload: dict[str, A
         return "external_send"
     if target_system == "telegram" and payload.get("action") == "send_message":
         return "external_send"
+    if target_system == "calendar" and payload.get("action") == "create_event":
+        return "clarification_needed" if missing_create_event_fields(payload) else "external_send"
     if target_system == "stripe":
         if payload.get("action") == "create_refund":
             return "refund"

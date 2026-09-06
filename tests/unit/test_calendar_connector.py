@@ -1,8 +1,8 @@
+import asyncio
 import json
 
-import asyncio
-
 import httpx
+import pytest
 
 from app.domains.connector.calendar.calendar import CalendarConnector
 
@@ -17,8 +17,16 @@ def test_calendar_list_events_uses_events_api():
             200,
             json={
                 "items": [
-                    {"id": "ev1", "summary": "Standup", "start": {"dateTime": "2026-09-01T09:00:00Z"}},
-                    {"id": "ev2", "summary": "Review", "start": {"dateTime": "2026-09-01T10:00:00Z"}},
+                    {
+                        "id": "ev1",
+                        "summary": "Standup",
+                        "start": {"dateTime": "2026-09-01T09:00:00Z"},
+                    },
+                    {
+                        "id": "ev2",
+                        "summary": "Review",
+                        "start": {"dateTime": "2026-09-01T10:00:00Z"},
+                    },
                 ]
             },
         )
@@ -102,12 +110,17 @@ def test_calendar_rejects_unsupported_action():
     assert result.status == "FAILED"
     assert result.result_summary == "unsupported Calendar action"
 
+
 def test_calendar_create_event_posts_to_events_api():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert request.url.path == "/calendar/v3/calendars/primary/events"
-        body = request.content
-        assert b'"summary"' in body
+        body = json.loads(request.content)
+        assert body == {
+            "summary": "Team Standup",
+            "start": {"dateTime": "2026-09-07T10:00:00+07:00", "timeZone": "Asia/Jakarta"},
+            "end": {"dateTime": "2026-09-07T10:30:00+07:00", "timeZone": "Asia/Jakarta"},
+        }
         return httpx.Response(
             200,
             json={
@@ -128,8 +141,8 @@ def test_calendar_create_event_posts_to_events_api():
                     "run_id": "run_1",
                     "action_id": "act_1",
                     "summary": "Team Standup",
-                    "start": "2026-09-07T10:00:00Z",
-                    "end": "2026-09-07T10:30:00Z",
+                    "start": "2026-09-07T10:00:00+07:00",
+                    "end": "2026-09-07T10:30:00+07:00",
                 },
             )
 
@@ -155,6 +168,90 @@ def test_calendar_create_event_validates_required_fields():
 
     assert result.status == "FAILED"
     assert "missing required fields" in result.result_summary
+
+
+def test_calendar_create_event_accepts_legacy_datetime_aliases_before_validation():
+    captured_body = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content))
+        return httpx.Response(200, json={"id": "evt_legacy", "summary": "Legacy Meeting"})
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://www.googleapis.com/calendar/v3",
+        ) as client:
+            return await CalendarConnector(client).execute(
+                "create_event",
+                {
+                    "run_id": "run_1",
+                    "action_id": "act_1",
+                    "summary": "Legacy Meeting",
+                    "start_time": "2026-09-07T14:00:00+07:00",
+                    "end_time": "2026-09-07T15:00:00+07:00",
+                },
+            )
+
+    result = asyncio.run(run())
+
+    assert result.status == "SUCCESS"
+    assert captured_body["start"]["dateTime"] == "2026-09-07T14:00:00+07:00"
+    assert captured_body["end"]["dateTime"] == "2026-09-07T15:00:00+07:00"
+
+
+@pytest.mark.parametrize(
+    ("legacy_field", "value", "expected_missing"),
+    [
+        ("start_time", "2026-09-07T14:00:00+07:00", "end"),
+        ("end_time", "2026-09-07T15:00:00+07:00", "start"),
+    ],
+)
+def test_calendar_create_event_reports_missing_legacy_counterpart_safely(
+    legacy_field, value, expected_missing
+):
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+            base_url="https://www.googleapis.com/calendar/v3",
+        ) as client:
+            return await CalendarConnector(client).execute(
+                "create_event",
+                {
+                    "run_id": "run_1",
+                    "action_id": "act_1",
+                    "summary": "Incomplete Meeting",
+                    legacy_field: value,
+                },
+            )
+
+    result = asyncio.run(run())
+
+    assert result.status == "FAILED"
+    assert result.result_summary == f"missing required fields: {expected_missing}"
+
+
+def test_calendar_create_event_rejects_invalid_datetimes_before_request():
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: pytest.fail("request must not be sent")),
+            base_url="https://www.googleapis.com/calendar/v3",
+        ) as client:
+            return await CalendarConnector(client).execute(
+                "create_event",
+                {
+                    "run_id": "run_1",
+                    "action_id": "act_1",
+                    "summary": "Invalid Meeting",
+                    "start": "2026-09-07T15:00:00+07:00",
+                    "end": "2026-09-07T14:00:00+07:00",
+                },
+            )
+
+    result = asyncio.run(run())
+
+    assert result.status == "FAILED"
+    assert result.result_summary == "end must be after start"
 
 
 def test_calendar_create_event_includes_optional_fields():

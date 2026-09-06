@@ -1,8 +1,13 @@
 import httpx
 
+from app.config.settings import get_settings
 from app.core.errors import ConnectorError, ConnectorErrorCode
 from app.core.schemas import ExecutionResult, ExecutionStatus
 from app.domains.connector.base import BaseConnector
+from app.domains.connector.calendar.contract import (
+    CalendarPayloadValidationError,
+    validate_create_event_payload,
+)
 from app.domains.oauth.service import get_access_token
 
 
@@ -77,13 +82,16 @@ class CalendarConnector(BaseConnector):
         )
 
     async def _create_event(self, payload: dict) -> ExecutionResult:
-        required = ("summary", "start", "end")
-        missing = [f for f in required if not payload.get(f)]
-        if missing:
+        try:
+            payload = validate_create_event_payload(
+                payload,
+                get_settings().CALENDAR_DEFAULT_TIMEZONE,
+            )
+        except CalendarPayloadValidationError as exc:
             return failed(
                 payload["run_id"],
                 payload["action_id"],
-                f"missing required fields: {', '.join(missing)}",
+                str(exc),
             )
 
         calendar_id = payload.get("calendar_id", "primary")
@@ -202,7 +210,9 @@ def calendar_error(run_id: str, action_id: str, status_code: int) -> ExecutionRe
             ConnectorErrorCode.PERMISSION,
         )
     if status_code == 404:
-        return failed(run_id, action_id, "Calendar resource not found", ConnectorErrorCode.NOT_FOUND)
+        return failed(
+            run_id, action_id, "Calendar resource not found", ConnectorErrorCode.NOT_FOUND
+        )
     return failed(
         run_id,
         action_id,

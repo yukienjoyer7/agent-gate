@@ -51,6 +51,10 @@ from app.domains.agent.services.browser_prototype_agent import (
 from app.domains.agent.services.guarded_execution import run_guarded_action
 from app.domains.agent.services.run_registry import RunSession, StepState
 from app.domains.audit.repositories import get_audit_repository
+from app.domains.connector.calendar.contract import (
+    missing_create_event_fields,
+    normalize_create_event_payload,
+)
 from app.domains.connector.telegram.recipient_resolver import (
     RecipientResolution,
     RecipientResolutionStatus,
@@ -289,6 +293,7 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
         if decision.decision == Decision.ASK_USER:
             # Ambiguous step (e.g. unclear target). Pause once and ask the user
             # for clarification; after that, treat it as user-approved.
+            calendar_fields = _calendar_create_event_missing_fields(step)
             if step.clarified:
                 decision = decision.model_copy(
                     update={
@@ -310,7 +315,11 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
                     "index": step.index,
                     "sanitize": False,
                     "clarify": True,
-                    "fields": [{"key": "clarification", "label": "Informasi yang kurang"}],
+                    "fields": (
+                        _calendar_clarification_fields(calendar_fields)
+                        if calendar_fields
+                        else [{"key": "clarification", "label": "Informasi yang kurang"}]
+                    ),
                     "reasons": decision.reasons,
                     "step": step.public(),
                 },
@@ -319,8 +328,18 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
             if response is None:  # timeout
                 return None
             run.status = RunStatus.RUNNING
-            fields = response.get("fields") or {}
-            text = str(fields.get("clarification") or response.get("text") or "").strip()
+            response_fields = response.get("fields")
+            response_fields = response_fields if isinstance(response_fields, dict) else {}
+            text = str(response_fields.get("clarification") or response.get("text") or "").strip()
+            if calendar_fields:
+                # Calendar's fields are explicit so the response can become
+                # the canonical payload and be evaluated again. It is still
+                # not an approval: once complete, the next pass reaches the
+                # normal NEED_APPROVAL decision for an external write.
+                _apply_user_input(step, response)
+                payload = step.data.get("payload") or {}
+                step.data["payload"] = normalize_create_event_payload(payload)
+                continue
             if step.data.get("telegram_resolution_pending"):
                 _apply_telegram_recipient_clarification(step, text)
                 # The replacement can be a known @username or explicit
@@ -766,6 +785,25 @@ def _apply_user_input(step: StepState, response: dict[str, Any]) -> None:
         payload[key] = response["text"]
         step.answered.add(key)
     step.sanitize_fields = None
+
+
+def _calendar_create_event_missing_fields(step: StepState) -> list[str]:
+    """Return missing canonical details for a Calendar create-event step."""
+    if step.data.get("target_system") != "calendar":
+        return []
+    payload = step.data.get("payload")
+    if not isinstance(payload, dict) or payload.get("action") != "create_event":
+        return []
+    return missing_create_event_fields(payload)
+
+
+def _calendar_clarification_fields(fields: list[str]) -> list[dict[str, str]]:
+    labels = {
+        "summary": "Event summary",
+        "start": "Event start (ISO 8601 datetime)",
+        "end": "Event end (ISO 8601 datetime)",
+    }
+    return [{"key": field, "label": labels[field]} for field in fields]
 
 
 def _stored_decision(run: RunSession, step: StepState) -> DecisionResponse:

@@ -90,6 +90,42 @@ class TestNormalizeStep:
         # connector sends genuinely transmit data → external_send is kept
         assert step["risk_hint"] == "external_send"
 
+    def test_calendar_create_event_uses_canonical_datetime_keys(self) -> None:
+        step = llm_parser._normalize_step(
+            {
+                "action_type": "API_CALL",
+                "target_system": "calendar",
+                "payload": {
+                    "action": "create_event",
+                    "summary": "meeting laplace #2",
+                    "start_time": "2026-09-13T18:00:00+07:00",
+                    "end_time": "2026-09-13T19:00:00+07:00",
+                },
+            }
+        )
+
+        assert step is not None
+        assert step["domain"] == "productivity"
+        assert step["risk_hint"] == "external_send"
+        assert step["payload"] == {
+            "action": "create_event",
+            "summary": "meeting laplace #2",
+            "start": "2026-09-13T18:00:00+07:00",
+            "end": "2026-09-13T19:00:00+07:00",
+        }
+
+    def test_calendar_create_event_without_times_requires_clarification(self) -> None:
+        step = llm_parser._normalize_step(
+            {
+                "action_type": "API_CALL",
+                "target_system": "calendar",
+                "payload": {"action": "create_event", "summary": "meeting"},
+            }
+        )
+
+        assert step is not None
+        assert step["risk_hint"] == "clarification_needed"
+
     def test_browser_login_external_send_downgraded_to_unknown(self) -> None:
         """Models often label BROWSER_TYPE/CLICK login steps external_send,
         which would wrongly force NEED_APPROVAL instead of a user-input
@@ -202,6 +238,14 @@ class TestNormalizeStep:
         assert step is not None
         assert step["payload"]["chat_id"] == 123456789
         assert "recipient" not in step["payload"]
+
+
+def test_calendar_contract_is_explicit_in_planner_schema() -> None:
+    prompt = llm_parser._base_system_prompt()
+
+    assert '"start": "<ISO 8601 datetime>"' in prompt
+    assert '"end": "<ISO 8601 datetime>"' in prompt
+    assert "NEVER use\n  ``start_time`` or ``end_time``" in prompt
 
 
 class TestEnsureOpenStep:

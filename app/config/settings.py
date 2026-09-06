@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     GOOGLE_OAUTH_CLIENT_SECRET: str = ""
     GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/oauth/gmail/callback"
     GOOGLE_CALENDAR_OAUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/oauth/calendar/callback"
+    # Time zone applied to Calendar datetimes that do not include an offset.
+    # It is configurable rather than inferred from the server's local clock.
+    CALENDAR_DEFAULT_TIMEZONE: str = "Asia/Jakarta"
 
     # LLM provider (LLM_TYPE: "openai" = OpenAI-compatible chat completions,
     # "anthropic" = Anthropic Messages API — the client translates the shared

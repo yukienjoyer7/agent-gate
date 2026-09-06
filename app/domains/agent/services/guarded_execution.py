@@ -32,7 +32,9 @@ async def run_guarded_action(
     latency.start("audit_write")
     audit_latency = latency.values()
     audit_latency["audit_write_ms"] = 0
-    event = await (audit or get_audit_repository()).write(request, decision, execution, audit_latency)
+    event = await (audit or get_audit_repository()).write(
+        request, decision, execution, audit_latency
+    )
     latency.stop("audit_write")
 
     (traces or TraceWriter()).write(
@@ -40,7 +42,7 @@ async def run_guarded_action(
             run_id=request.run_id,
             action_id=request.action_id,
             user_goal=proposal.get("user_goal", ""),
-            raw_tool_call=_safe_trace_tool_call(proposal),
+            raw_tool_call=_safe_trace_tool_call({**proposal, "payload": request.payload}),
             action_request=request.model_dump(mode="json", exclude={"payload"}),
             decision=decision.model_dump(mode="json"),
             execution=execution.model_dump(mode="json"),

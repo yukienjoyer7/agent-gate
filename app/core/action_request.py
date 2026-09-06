@@ -2,11 +2,17 @@ from typing import Any
 
 from app.config.settings import get_settings
 from app.core.schemas import ActionRequest, new_id
+from app.domains.connector.calendar.contract import (
+    missing_create_event_fields,
+    normalize_create_event_payload,
+)
 
 
 def build_action_request(proposal: dict[str, Any]) -> ActionRequest:
     payload = proposal.get("payload") or {}
     target_system = proposal["target_system"]
+    if target_system == "calendar" and payload.get("action") == "create_event":
+        payload = normalize_create_event_payload(payload)
     domain = proposal.get("domain") or get_settings().DEFAULT_DOMAIN
     risk_hint = proposal.get("risk_hint", "unknown")
     payload_summary = proposal.get("payload_summary", summarize_payload(payload))
@@ -21,6 +27,14 @@ def build_action_request(proposal: dict[str, Any]) -> ActionRequest:
         elif stripe_action == "create_refund":
             risk_hint = "refund"
         payload_summary = summarize_stripe_payload(payload)
+    if target_system == "calendar" and payload.get("action") == "create_event":
+        # A direct API caller cannot downgrade a Calendar write. Missing event
+        # details pause on the existing clarification flow instead of being
+        # guessed or sent for approval as an invalid request.
+        domain = get_settings().DOMAIN_BY_TARGET_SYSTEM.get("calendar", "productivity")
+        risk_hint = (
+            "clarification_needed" if missing_create_event_fields(payload) else "external_send"
+        )
     return ActionRequest(
         run_id=proposal.get("run_id") or new_id("run"),
         action_id=proposal.get("action_id") or new_id("act"),

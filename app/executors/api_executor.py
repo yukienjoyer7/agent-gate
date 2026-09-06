@@ -1,6 +1,7 @@
 from app.core.errors import ConnectorError
 from app.core.schemas import ActionRequest, ExecutionResult, ExecutionStatus
 from app.domains.connector.calendar import CalendarConnector
+from app.domains.connector.calendar.contract import normalize_create_event_payload
 from app.domains.connector.filesystem import LocalFileConnector
 from app.domains.connector.github import GitHubConnector
 from app.domains.connector.gmail import GmailConnector
@@ -47,4 +48,6 @@ class APIExecutor:
             "target": action.target,
             **action.payload,
         }
+        if action.target_system == "calendar" and connector_action == "create_event":
+            payload = normalize_create_event_payload(payload)
         return await connector.execute(connector_action, payload)
