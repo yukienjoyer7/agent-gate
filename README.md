@@ -72,6 +72,8 @@ until the Playwright executor is hardened.
 
 - [Telegram](./docs/integrations/telegram.md): inbound bot webhook channel and
   outbound guarded `telegram.send_message` connector.
+- [Stripe](./docs/integrations/stripe.md): approval-gated hosted checkout,
+  refunds, payment status, and signed webhook reconciliation.
 
 ## Interactive chat runs (reactive agent loop)
 

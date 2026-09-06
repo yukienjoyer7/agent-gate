@@ -53,6 +53,10 @@ or stop with done=true).
 risk_hint "external_send", and payload {{"action": "send_message", "recipient": "<name or @username>", "text": "..."}}. \
 Use a numeric ``chat_id`` only if the user explicitly supplied that exact Telegram chat ID; never \
 put a human name in ``chat_id`` or invent one. Runtime resolves recipient references before approval.
+- For Stripe checkout, emit action_type "API_CALL", target_system "stripe", domain "booking", \
+risk_hint "payment", and payload {{"action": "create_checkout_session", "catalog_key": "<configured key>", "quantity": 1}}. \
+For refunds use risk_hint "refund" and payload {{"action": "create_refund", "payment_intent_id": "pi_...", "amount": <optional minor-unit integer>}}. \
+Never invent prices, currencies, redirect URLs, payouts, transfers, or raw Stripe API requests.
 - Keep the batch minimal (1-3 steps). Never invent secrets — leave {{password}} style placeholders \
 in the payload when the value must come from the user.
 - Only emit BROWSER_SCREENSHOT when the user explicitly asked for a screenshot. Never add it for

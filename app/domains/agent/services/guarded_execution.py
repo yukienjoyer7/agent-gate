@@ -40,7 +40,7 @@ async def run_guarded_action(
             run_id=request.run_id,
             action_id=request.action_id,
             user_goal=proposal.get("user_goal", ""),
-            raw_tool_call=proposal,
+            raw_tool_call=_safe_trace_tool_call(proposal),
             action_request=request.model_dump(mode="json", exclude={"payload"}),
             decision=decision.model_dump(mode="json"),
             execution=execution.model_dump(mode="json"),
@@ -50,3 +50,16 @@ async def run_guarded_action(
         )
     )
     return event
+
+
+def _safe_trace_tool_call(proposal: dict) -> dict:
+    """Keep Stripe customer PII out of the persistent action trace."""
+    if proposal.get("target_system") != "stripe":
+        return proposal
+    safe = {**proposal}
+    payload = proposal.get("payload")
+    if isinstance(payload, dict):
+        safe_payload = {**payload}
+        safe_payload.pop("customer_email", None)
+        safe["payload"] = safe_payload
+    return safe

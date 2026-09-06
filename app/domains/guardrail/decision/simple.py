@@ -32,6 +32,16 @@ def _hint_sets(settings) -> tuple[set[str], set[str], set[str]]:
 # (pattern, sensitive_entity label, replacement)
 SECRET_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"), "api_key", "[REDACTED]"),
+    (
+        re.compile(r"\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{16,}\b"),
+        "stripe_api_key",
+        "[REDACTED]",
+    ),
+    (
+        re.compile(r"\bwhsec_[A-Za-z0-9]{16,}\b"),
+        "stripe_webhook_secret",
+        "[REDACTED]",
+    ),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "aws_access_key", "[REDACTED]"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"), "github_token", "[REDACTED]"),
     (

@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_WEBHOOK_SECRET: str = ""
     TELEGRAM_API_BASE: str = "https://api.telegram.org"
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_SUCCESS_URL: str = "http://localhost:8000/payment/success"
+    STRIPE_CANCEL_URL: str = "http://localhost:8000/payment/cancel"
+    # Agent plans refer to stable catalog keys. The server resolves them to
+    # Stripe Price IDs so a model cannot invent an amount or currency.
+    STRIPE_PRICE_MAP: dict[str, str] = {}
+    STRIPE_MAX_QUANTITY: int = Field(default=20, ge=1, le=1000)
+    STRIPE_WEBHOOK_TOLERANCE_SEC: int = Field(default=300, ge=30, le=3600)
     XENDIT_API_KEY: str = ""
 
     # OAuth apps (GitHub OAuth App / Google Cloud OAuth client)

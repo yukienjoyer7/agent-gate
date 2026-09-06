@@ -19,23 +19,30 @@ if sys.platform == "win32":
 
 # Import models so their tables register on Base.metadata for autogenerate.
 # This keeps the ORM model definitions and Alembic metadata aligned.
-from app.database.models import AuditLog, OAuthToken, TelegramContact  # noqa: F401
+from app.database.models import (  # noqa: F401
+    AuditLog,
+    OAuthToken,
+    StripePayment,
+    StripeWebhookEvent,
+    TelegramContact,
+)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
-config = context.config
+config = getattr(context, "config", None)
 
 # Inject the runtime DATABASE_URL from app settings (keeps secrets out of alembic.ini).
 # asyncpg needs the same URL normalization as the runtime engine.
 settings = get_settings()
 normalized_database_url = normalize_asyncpg_url(settings.DATABASE_URL)
-config.set_main_option(
-    "sqlalchemy.url", normalized_database_url.render_as_string(hide_password=False)
-)
+if config is not None:
+    config.set_main_option(
+        "sqlalchemy.url", normalized_database_url.render_as_string(hide_password=False)
+    )
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
-if config.config_file_name is not None:
+if config is not None and config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Model metadata for 'autogenerate' support.
@@ -108,7 +115,8 @@ def run_migrations_online() -> None:
     asyncio.run(run_async_migrations())
 
 
-if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
+if config is not None:
+    if context.is_offline_mode():
+        run_migrations_offline()
+    else:
+        run_migrations_online()

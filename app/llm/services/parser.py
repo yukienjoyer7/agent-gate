@@ -158,6 +158,12 @@ Rules:
 - payload for gmail: {{"action": "send"|"read"|"archive", "to": "...", "body": "...", "query": "..."}}
 - payload for github: {{"action": "repo_metadata", "owner": "...", "repo": "..."}}
 - payload for local_file: {{"action": "read", "path": "..."}}
+- payload for stripe checkout: {{"action": "create_checkout_session", "catalog_key": "<configured catalog key>", "quantity": 1, "customer_email": "<optional>"}}
+- payload for stripe status: {{"action": "retrieve_checkout_session", "session_id": "cs_..."}}
+- payload for stripe refund: {{"action": "create_refund", "payment_intent_id": "pi_...", "amount": <optional positive integer in the currency minor unit>, "reason": "requested_by_customer"}}
+- Never create a Stripe price, currency, redirect URL, payout, transfer, or raw API request. Stripe
+  checkout must use a configured catalog_key. Use domain "booking" and risk_hint "payment" for
+  checkout/expiry or "refund" for refunds.
 - payload for telegram: {{"action": "send_message", "recipient": "<name or @username>", "text": "..."}}
   or, only when the user explicitly supplied a numeric Telegram chat ID,
   {{"action": "send_message", "chat_id": 123456789, "text": "..."}}.
@@ -518,17 +524,39 @@ def _normalize_step(step: dict[str, Any]) -> dict[str, Any] | None:
     ):
         risk_hint = "unknown"
 
+    if target_system == "stripe":
+        # Stripe's critical financial policy is authoritative. A model cannot
+        # downgrade a write by emitting domain=browser or risk_hint=unknown.
+        domain = rules["domain_by_target_system"].get("stripe", "booking")
+        stripe_action = payload.get("action")
+        if stripe_action in {"create_checkout_session", "expire_checkout_session"}:
+            risk_hint = "payment"
+        elif stripe_action == "create_refund":
+            risk_hint = "refund"
+
     target = (
         step.get("target")
         or step.get("url")  # models often return {action: navigate, url: ...}
         or payload.get("url")
         or payload.get("path")
+        or payload.get("catalog_key")
+        or payload.get("session_id")
+        or payload.get("payment_intent_id")
+        or payload.get("refund_id")
         or ""
     )
     if target_system == "telegram" and payload.get("action") == "send_message":
         # The target presented to the rest of AgentGate is the human reference
         # (or an explicitly provided ID), never a name masquerading as chat_id.
         target = payload.get("recipient") or payload.get("chat_id") or target
+    if target_system == "stripe":
+        target = (
+            payload.get("catalog_key")
+            or payload.get("session_id")
+            or payload.get("payment_intent_id")
+            or payload.get("refund_id")
+            or target
+        )
     if (
         isinstance(target, str)
         and target_system == "browser"
@@ -575,6 +603,11 @@ def _derive_risk_hint(action_type: str, target_system: str, payload: dict[str, A
         return "external_send"
     if target_system == "telegram" and payload.get("action") == "send_message":
         return "external_send"
+    if target_system == "stripe":
+        if payload.get("action") == "create_refund":
+            return "refund"
+        if payload.get("action") in {"create_checkout_session", "expire_checkout_session"}:
+            return "payment"
     # Form submits with a label are treated as external_send (NEED_APPROVAL).
     if action_type in ("BROWSER_SUBMIT", "BROWSER_SELECT") and payload.get("label"):
         return "external_send"
