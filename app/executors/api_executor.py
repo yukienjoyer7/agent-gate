@@ -1,5 +1,6 @@
 from app.core.errors import ConnectorError
 from app.core.schemas import ActionRequest, ExecutionResult, ExecutionStatus
+from app.domains.connector.calendar import CalendarConnector
 from app.domains.connector.filesystem import LocalFileConnector
 from app.domains.connector.github import GitHubConnector
 from app.domains.connector.gmail import GmailConnector
@@ -15,6 +16,7 @@ class APIExecutor:
             "gmail": GmailConnector(),
             "stripe": StripeConnector(),
             "telegram": TelegramConnector(),
+            "calendar": CalendarConnector(),
         }
 
     async def execute(self, action: ActionRequest) -> ExecutionResult:

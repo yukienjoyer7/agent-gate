@@ -3,11 +3,27 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 
+from app.domains.oauth.repository import OAuthTokenRepository
 from app.domains.oauth.service import build_authorize_url, exchange_code
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
-Provider = Literal["github", "gmail"]
+Provider = Literal["github", "gmail", "calendar"]
+PROVIDERS: list[Provider] = ["github", "gmail", "calendar"]
+
+
+@router.get("/status")
+async def status() -> dict:
+    """Return connection status for every supported provider."""
+    repo = OAuthTokenRepository()
+    result: dict[str, dict] = {}
+    for p in PROVIDERS:
+        token = await repo.get(p)
+        result[p] = {
+            "connected": token is not None,
+            "scope": token.scope if token else None,
+        }
+    return result
 
 
 @router.get("/{provider}/authorize")
