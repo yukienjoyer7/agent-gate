@@ -11,9 +11,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.run_schema import RunStatus, StepStatus
-from app.core.schemas import AuditEvent, Decision, ExecutionStatus
+from app.core.schemas import AuditEvent, Decision, DecisionResponse, ExecutionStatus
 from app.domains.agent.services import agent_loop
-from app.domains.agent.services.run_registry import run_registry
+from app.domains.agent.services.run_registry import StepState, run_registry
 from app.domains.connector.telegram.contacts import TelegramContactIdentity
 from app.domains.connector.telegram.recipient_resolver import (
     RecipientResolution,
@@ -169,6 +169,47 @@ async def test_approval_then_execute(monkeypatch):
     assert decision.decision.value == "ALLOW"
     assert "approved by user" in decision.reasons
     assert proposal["run_id"] == run.run_id
+
+
+@pytest.mark.asyncio
+async def test_connector_step_result_includes_structured_execution(monkeypatch):
+    checkout_url = "https://checkout.stripe.com/c/pay/cs_test_structured"
+
+    async def fake_guarded(proposal, audit=None, traces=None, decision=None):
+        return _event(
+            proposal["run_id"],
+            proposal["action_id"],
+            data={"id": "cs_test_structured", "url": checkout_url},
+        )
+
+    monkeypatch.setattr(agent_loop, "run_guarded_action", fake_guarded)
+
+    run = run_registry.create("create checkout")
+    step = StepState(
+        index=0,
+        data={
+            "action_type": "API_CALL",
+            "target_system": "stripe",
+            "target": "workshop_ticket",
+            "payload": {
+                "action": "create_checkout_session",
+                "catalog_key": "workshop_ticket",
+                "quantity": 1,
+            },
+        },
+        action_id="act_checkout_structured",
+    )
+    decision = DecisionResponse(
+        run_id=run.run_id,
+        action_id=step.action_id,
+        decision=Decision.ALLOW,
+    )
+
+    await agent_loop._execute_connector_steps(run, [(step, decision)])
+
+    events = list(run.events._queue)
+    step_result = next(event for event in events if event["type"] == "step_result")
+    assert step_result["data"]["result"]["data"]["url"] == checkout_url
 
 
 @pytest.mark.asyncio

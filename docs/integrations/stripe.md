@@ -44,6 +44,14 @@ Apply the database migration before receiving Stripe traffic:
 uv run alembic upgrade head
 ```
 
+The Stripe reconciliation tables are created by migration `0004`. If Checkout
+creation succeeds but the action reports `Stripe session was created but local
+reconciliation failed`, check the API log for a database error and run the
+migration against the same `DATABASE_URL` used by the API. Do not retry a live
+checkout until the migration has completed; retries within the same AgentGate
+run use a stable Stripe idempotency key and can safely recover the existing
+Checkout Session after persistence is restored.
+
 ## Local webhook setup
 
 Install and authenticate the Stripe CLI, then forward sandbox events:

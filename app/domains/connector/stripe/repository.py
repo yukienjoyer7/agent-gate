@@ -44,13 +44,28 @@ class StripePaymentRepository:
             raise ValueError("Stripe Checkout Session ID is required")
 
         async with self._scope() as db:
-            row = await _find_payment(db, stripe_session_id=session_id)
-            if row is None:
-                row = StripePayment(stripe_session_id=session_id, status="open")
-                db.add(row)
-            _apply_checkout_session(row, session_data)
             try:
+                row = await _find_payment(db, stripe_session_id=session_id)
+                if row is None:
+                    row = StripePayment(stripe_session_id=session_id, status="open")
+                    db.add(row)
+                _apply_checkout_session(row, session_data)
                 await db.commit()
+            except IntegrityError:
+                await db.rollback()
+                # Two deliveries/retries may reconcile the same Checkout
+                # Session concurrently. The unique Stripe session ID makes
+                # the operation safe; merge into the row committed by the
+                # winner instead of surfacing a false reconciliation failure.
+                row = await _find_payment(db, stripe_session_id=session_id)
+                if row is None:
+                    raise
+                _apply_checkout_session(row, session_data)
+                try:
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    raise
             except Exception:
                 await db.rollback()
                 raise

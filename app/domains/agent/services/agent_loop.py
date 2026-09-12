@@ -725,6 +725,10 @@ async def _execute_connector_steps(
                 "status": (event.execution_status.value if event else "FAILED"),
                 "result_summary": (step.execution or {}).get("result_summary", error_message),
                 "observation": observation,
+                # Keep the existing observation for backwards compatibility,
+                # but also expose the structured connector result so clients
+                # do not have to parse the truncated observation string.
+                "result": step.execution,
             },
         )
         if not ok:

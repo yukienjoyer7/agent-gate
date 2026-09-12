@@ -133,6 +133,32 @@
   .detail { font-size: 12px; color: var(--muted); }
   .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 26px 10px; }
 
+  /* Checkout result links */
+  .checkout-url-block {
+    margin-top: 10px; padding: 11px 12px; border: 1px solid rgba(62, 207, 142, .35);
+    border-radius: 9px; background: rgba(62, 207, 142, .07); white-space: normal;
+    min-width: 0; max-width: 100%;
+  }
+  #log > .checkout-url-block { margin: 10px 0; }
+  .checkout-url-label { color: var(--green); font-size: 11px; font-weight: 700; letter-spacing: .4px; }
+  .checkout-url {
+    display: block; margin-top: 4px; color: var(--cyan); font-family: var(--mono); font-size: 12px;
+    white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+  }
+  .checkout-url:hover { color: var(--text); }
+  .checkout-url-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 9px; }
+  .checkout-url-actions a, .checkout-url-actions button {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 5px 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600;
+    text-decoration: none; cursor: pointer; font-family: inherit;
+  }
+  .checkout-open { background: var(--green); color: #062b1c; }
+  .checkout-copy { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+  .detail .checkout-url-block { margin-top: 7px; padding: 8px 9px; max-width: 420px; }
+  .detail .checkout-url { font-size: 11px; }
+  .detail .checkout-url-actions { margin-top: 7px; }
+  .detail .checkout-url-actions a, .detail .checkout-url-actions button { padding: 4px 7px; font-size: 10.5px; }
+
   /* Interaction panel */
   #interaction { display: none; }
   #interaction.visible { display: block; }
@@ -434,15 +460,156 @@ function onExecuting(data) {
 
 function onStepResult(data) {
   const idxs = Array.isArray(data.index) ? data.index : [data.index];
+  const result = data.result && typeof data.result === "object" ? data.result : null;
+  const status = data.status || result?.status || "";
+  const resultSummary = data.result_summary || result?.result_summary || result?.summary || "";
+  const checkoutUrl = status === "SUCCESS" ? extractCheckoutUrl(data) : "";
   for (const i of idxs) {
     const s = steps.get(i);
-    if (s) { s.status = data.status === "SUCCESS" ? "done" : "failed"; s.result = data.result_summary; }
+    if (s) {
+      s.status = status === "SUCCESS" ? "done" : "failed";
+      s.result = resultSummary;
+      s.result_url = checkoutUrl;
+    }
   }
   renderSteps();
-  const ok = data.status === "SUCCESS";
-  log("step_result", (ok ? "✅" : "❌") + " Step #" + idxs.join(", #") + " → " + data.status +
-    (data.result_summary ? " — " + data.result_summary : ""));
+  const ok = status === "SUCCESS";
+  log("step_result", (ok ? "✅" : "❌") + " Step #" + idxs.join(", #") + " → " + status +
+    (resultSummary ? " — " + resultSummary : ""));
   if (data.observation) log("step_result", "  observasi: " + data.observation);
+  if (checkoutUrl) {
+    const urlBlock = createCheckoutUrlBlock(checkoutUrl);
+    if (urlBlock) logEl.appendChild(urlBlock);
+  }
+}
+
+const STRIPE_CHECKOUT_URL_PREFIX = "https://checkout.stripe.com/";
+
+function extractCheckoutUrl(value) {
+  const seen = new Set();
+
+  function visit(current, depth = 0) {
+    if (current == null || depth > 12) return "";
+
+    if (typeof current === "string") {
+      const directUrl = normalizeStripeCheckoutUrl(current);
+      if (directUrl) return directUrl;
+
+      // A result or observation can itself be a serialized JSON object.
+      const serialized = current.trim();
+      if (serialized.startsWith("{") || serialized.startsWith("[")) {
+        try {
+          const parsed = JSON.parse(serialized);
+          const parsedUrl = visit(parsed, depth + 1);
+          if (parsedUrl) return parsedUrl;
+        } catch {
+          // The string may be a truncated observation; inspect URL text below.
+        }
+      }
+
+      const embedded = current.match(/https:\/\/checkout\.stripe\.com\/[^\s"'<>]+/);
+      return normalizeStripeCheckoutUrl(embedded?.[0]);
+    }
+
+    if (typeof current !== "object") return "";
+    if (seen.has(current)) return "";
+    seen.add(current);
+
+    const priorityKeys = ["url", "checkout_url", "result", "data", "result_data", "execution", "observation"];
+    for (const key of priorityKeys) {
+      if (Object.prototype.hasOwnProperty.call(current, key)) {
+        const url = visit(current[key], depth + 1);
+        if (url) return url;
+      }
+    }
+    for (const child of Object.values(current)) {
+      const url = visit(child, depth + 1);
+      if (url) return url;
+    }
+    return "";
+  }
+
+  return visit(value);
+}
+
+function normalizeStripeCheckoutUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  const candidate = value.trim().replace(/[),.;]+$/, "");
+  if (!candidate.startsWith(STRIPE_CHECKOUT_URL_PREFIX)) return "";
+  try {
+    const parsed = new URL(candidate);
+    return parsed.href.startsWith(STRIPE_CHECKOUT_URL_PREFIX) ? parsed.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function createCheckoutUrlBlock(rawUrl, options = {}) {
+  const url = normalizeStripeCheckoutUrl(rawUrl);
+  if (!url) return null;
+
+  const block = document.createElement("div");
+  block.className = "checkout-url-block";
+
+  const label = document.createElement("div");
+  label.className = "checkout-url-label";
+  label.textContent = "Checkout URL";
+  block.appendChild(label);
+
+  const link = document.createElement("a");
+  link.className = "checkout-url";
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = url;
+  link.title = "Open Checkout URL";
+  block.appendChild(link);
+
+  if (options.includeActions !== false) {
+    const actions = document.createElement("div");
+    actions.className = "checkout-url-actions";
+
+    const openLink = document.createElement("a");
+    openLink.className = "checkout-open";
+    openLink.href = url;
+    openLink.target = "_blank";
+    openLink.rel = "noopener noreferrer";
+    openLink.textContent = "Open Checkout";
+    actions.appendChild(openLink);
+
+    const copyButton = document.createElement("button");
+    copyButton.className = "checkout-copy";
+    copyButton.type = "button";
+    copyButton.textContent = "Copy URL";
+    copyButton.addEventListener("click", () => copyCheckoutUrl(url, copyButton));
+    actions.appendChild(copyButton);
+
+    block.appendChild(actions);
+  }
+  return block;
+}
+
+async function copyCheckoutUrl(url, button) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      const input = document.createElement("textarea");
+      input.value = url;
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      const copied = document.execCommand("copy");
+      input.remove();
+      if (!copied) throw new Error("clipboard unavailable");
+    }
+    button.textContent = "Copied";
+  } catch {
+    button.textContent = "Copy failed";
+  }
+  window.setTimeout(() => { button.textContent = "Copy URL"; }, 1800);
 }
 
 function onAwaitingApproval(data) {
@@ -492,6 +659,13 @@ function renderSteps() {
       <td class="detail">${detailBits.map(escapeHtml).join("<br>") || "&nbsp;"}</td>
     </tr>`;
   }).join("");
+
+  list.forEach((s, rowIndex) => {
+    if (!s.result_url) return;
+    const detail = stepBody.rows[rowIndex]?.querySelector(".detail");
+    const urlBlock = createCheckoutUrlBlock(s.result_url, { includeActions: false });
+    if (detail && urlBlock) detail.appendChild(urlBlock);
+  });
 }
 
 function renderInteraction() {

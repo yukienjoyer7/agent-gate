@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from collections.abc import Callable
@@ -144,7 +146,7 @@ class StripeConnector(BaseConnector):
                 retryable=True,
                 started=started,
             )
-        except Exception:  # noqa: BLE001 - connector boundary must return a typed result
+        except Exception:
             logger.exception("Unexpected Stripe connector failure", extra={"action": action})
             return failed(
                 run_id,
@@ -205,26 +207,41 @@ class StripeConnector(BaseConnector):
         ):
             return failed(run_id, action_id, "customer_email is invalid", started=started)
 
+        normalized_customer_email = (
+            customer_email.strip() if isinstance(customer_email, str) else None
+        )
+        checkout_key = checkout_idempotency_key(
+            run_id,
+            catalog_key=catalog_key,
+            price_id=price_id,
+            quantity=quantity,
+            success_url=settings.STRIPE_SUCCESS_URL,
+            cancel_url=settings.STRIPE_CANCEL_URL,
+            customer_email=normalized_customer_email,
+        )
+
         params: dict[str, Any] = {
             "mode": "payment",
             "line_items": [{"price": price_id, "quantity": quantity}],
             "success_url": settings.STRIPE_SUCCESS_URL,
             "cancel_url": settings.STRIPE_CANCEL_URL,
             "client_reference_id": run_id,
+            # Keep remote parameters stable across an agent replan. The
+            # current action ID belongs in local reconciliation metadata; it
+            # changes when a replanner emits a replacement step and therefore
+            # must not be part of a Stripe-idempotent request.
             "metadata": {
                 "run_id": run_id,
-                "action_id": action_id,
                 "catalog_key": catalog_key,
+                "checkout_idempotency_key": checkout_key,
             },
         }
         if customer_email is not None:
-            params["customer_email"] = customer_email.strip()
+            params["customer_email"] = normalized_customer_email
 
         session = await client.v1.checkout.sessions.create_async(
             params,
-            options={
-                "idempotency_key": idempotency_key(run_id, action_id, "create_checkout_session")
-            },
+            options={"idempotency_key": checkout_key},
         )
         session_data = _checkout_session_data(session)
         try:
@@ -234,10 +251,17 @@ class StripeConnector(BaseConnector):
                     "metadata": {"run_id": run_id, "action_id": action_id},
                 }
             )
-        except Exception:  # noqa: BLE001 - report a recoverable reconciliation failure
+        except Exception as exc:
             logger.exception(
                 "Stripe Checkout Session persistence failed",
-                extra={"stripe_session_id": session_data.get("id")},
+                extra={
+                    "action": "create_checkout_session",
+                    "catalog_key": catalog_key,
+                    "stripe_session_id": session_data.get("id"),
+                    "run_id": run_id or None,
+                    "action_id": action_id or None,
+                    "idempotency_key": checkout_key,
+                },
             )
             return failed(
                 run_id,
@@ -245,7 +269,13 @@ class StripeConnector(BaseConnector):
                 "Stripe session was created but local reconciliation failed",
                 ConnectorErrorCode.UNAVAILABLE,
                 retryable=True,
-                details={"stripe_session_id": session_data.get("id")},
+                details={
+                    "stripe_session_id": session_data.get("id"),
+                    "stripe_session_url": session_data.get("url"),
+                    "idempotency_key": checkout_key,
+                    "catalog_key": catalog_key,
+                    "reconciliation_error_type": type(exc).__name__,
+                },
                 started=started,
             )
 
@@ -367,6 +397,40 @@ class StripeConnector(BaseConnector):
 
 def idempotency_key(run_id: str, action_id: str, action: str) -> str:
     return f"agentgate:{run_id}:{action_id}:{action}"[:255]
+
+
+def checkout_idempotency_key(
+    run_id: str,
+    *,
+    catalog_key: str,
+    price_id: str,
+    quantity: int,
+    success_url: str,
+    cancel_url: str,
+    customer_email: str | None,
+) -> str:
+    """Return a stable key for one logical checkout within an agent run.
+
+    Replanned steps receive new action IDs. Using the action ID here would let
+    a retry create a second Checkout Session after a local reconciliation
+    failure. Hashing the complete remote request inputs keeps the key stable
+    for an equivalent retry while avoiding customer PII in the key itself.
+    """
+    material = json.dumps(
+        {
+            "run_id": run_id,
+            "catalog_key": catalog_key,
+            "price_id": price_id,
+            "quantity": quantity,
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "customer_email": customer_email,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(material).hexdigest()[:32]
+    return f"agentgate:{run_id}:checkout:{digest}"[:255]
 
 
 def _checkout_session_data(session: Any) -> dict[str, Any]:
