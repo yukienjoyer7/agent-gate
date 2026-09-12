@@ -31,6 +31,7 @@ from app.domains.browser.selector_map.domInspector import build_execution_metada
 from app.domains.browser.snapshot.snapshotBuilder import (
     build_semantic_elements,
     enrich_semantic_elements,
+    prioritize_interactive_elements,
 )
 
 TOOL_NAME = "get_accessibility_tree"
@@ -143,7 +144,8 @@ async def _fetch_tree(
             # window when the result is fed back into the conversation.
             max_elements = settings.PLAYWRIGHT_MAX_ELEMENTS
             elements: list[dict[str, Any]] = []
-            for index, item in enumerate(metadata[:max_elements], start=1):
+            prioritized_metadata = prioritize_interactive_elements(metadata, max_elements)
+            for index, item in enumerate(prioritized_metadata, start=1):
                 semantic = item["semantic"]
                 dom = item["dom"]
                 elements.append(
@@ -157,6 +159,8 @@ async def _fetch_tree(
                         "id": dom.get("id"),
                         "test_id": dom.get("test_id"),
                         "text": (dom.get("text") or "")[:80],
+                        "selected": dom.get("selected"),
+                        "options_available": dom.get("options_available"),
                     }
                 )
 

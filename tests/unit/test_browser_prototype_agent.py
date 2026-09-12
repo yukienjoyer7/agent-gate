@@ -1,12 +1,16 @@
 import pytest
 
+from app.domains.agent.services import browser_sessions
+from app.domains.agent.services.agent_loop import _browser_observation
 from app.domains.agent.services.browser_prototype_agent import (
     BrowserPageModel,
     _normalize_actions,
     _payload_summary,
     _prepare_action,
     _result_summary,
+    public_browser_actions,
 )
+from app.domains.browser.snapshot.snapshotBuilder import prioritize_interactive_elements
 
 
 def _page_model() -> BrowserPageModel:
@@ -242,6 +246,33 @@ def test_prepare_submit_resolves_and_is_supported():
     assert prepared["element_id"] == "el_continue"
 
 
+def test_prepare_select_requires_value_and_resolves_control():
+    prepared = _prepare_action(
+        action={"type": "select", "label": "Country", "value": "Indonesia"},
+        page_model=BrowserPageModel(
+            snapshot=[
+                {
+                    "element_id": "el_country",
+                    "role": "combobox",
+                    "label": "Country",
+                    "risk_hint": "unknown",
+                    "dom": {"tag": "select"},
+                }
+            ],
+            locator_candidates=[],
+            selector_map={"el_country": {"primary": {}, "fallbacks": []}},
+        ),
+        action_id="act_demo",
+    )
+
+    assert prepared == {
+        "type": "select",
+        "label": "Country",
+        "value": "Indonesia",
+        "element_id": "el_country",
+    }
+
+
 def test_prepare_fill_prefers_editable_element_over_guessed_button_role():
     """The LLM often guesses role='button' for a search box (e.g. YouTube's
     'Search' input). The resolver must prefer the editable combobox with the
@@ -376,3 +407,164 @@ def test_sequence_summaries_describe_multi_step_actions():
         "3 browser actions on https://example.test: screenshot, click, screenshot"
     )
     assert _result_summary(actions, executed_count=3) == "executed 3 browser actions"
+
+
+def test_observation_prioritizes_controls_over_select_options():
+    elements = [
+        {
+            "semantic": {"role": "option", "label": f"Country {index}"},
+            "dom": {},
+        }
+        for index in range(200)
+    ]
+    elements.extend(
+        [
+            {"semantic": {"role": "textbox", "label": "Email"}, "dom": {}},
+            {"semantic": {"role": "button", "label": "Pay"}, "dom": {}},
+            {
+                "semantic": {"role": "combobox", "label": "Country or region"},
+                "dom": {"selected": "Indonesia", "options_available": True},
+            },
+        ]
+    )
+
+    prioritized = prioritize_interactive_elements(elements, max_elements=10)
+
+    assert [item["semantic"]["role"] for item in prioritized] == [
+        "textbox",
+        "button",
+        "combobox",
+    ]
+
+
+def test_browser_observation_includes_actionable_controls_without_option_flood():
+    event = type(
+        "Event",
+        (),
+        {
+            "execution_json": {
+                "data": {
+                    "final_url": "https://checkout.stripe.com/c/pay/session",
+                    "final_snapshot": [
+                        *[
+                            {"role": "option", "label": f"Country {index}"}
+                            for index in range(100)
+                        ],
+                        {"role": "textbox", "label": "Email"},
+                        {"role": "button", "label": "Pay"},
+                    ],
+                }
+            }
+        },
+    )()
+
+    observation = _browser_observation(event, "")
+
+    assert "textbox:Email" in observation
+    assert "button:Pay" in observation
+    assert "Country 99" not in observation
+
+
+def test_public_browser_actions_mask_fill_values():
+    actions = public_browser_actions(
+        [
+            {"type": "fill", "label": "CVC", "value": "123"},
+            {"type": "click", "label": "Pay"},
+        ]
+    )
+
+    assert actions[0]["value"] == "••••"
+    assert "123" not in str(actions)
+
+
+@pytest.mark.asyncio
+async def test_browser_session_persists_page_and_cleans_up(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "about:blank"
+            self.goto_calls = []
+
+        async def goto(self, url, **kwargs):
+            self.goto_calls.append((url, kwargs))
+            self.url = url
+
+    class FakeContext:
+        def __init__(self):
+            self.page = FakePage()
+            self.close_calls = 0
+
+        async def new_page(self):
+            return self.page
+
+        async def close(self):
+            self.close_calls += 1
+
+    class FakeBrowser:
+        def __init__(self):
+            self.context = FakeContext()
+            self.close_calls = 0
+
+        async def new_context(self, **kwargs):
+            return self.context
+
+        async def close(self):
+            self.close_calls += 1
+
+    class FakeChromium:
+        def __init__(self):
+            self.browser = FakeBrowser()
+
+        async def launch(self, **kwargs):
+            return self.browser
+
+    class FakePlaywright:
+        def __init__(self):
+            self.chromium = FakeChromium()
+            self.stop_calls = 0
+
+        async def start(self):
+            return self
+
+        async def stop(self):
+            self.stop_calls += 1
+
+    playwright = FakePlaywright()
+    monkeypatch.setattr(browser_sessions, "async_playwright", lambda: playwright)
+    manager = browser_sessions.BrowserSessionManager()
+
+    first = await manager.get_or_create("run_session")
+    async with first.lock:
+        await first.ensure_page(
+            url="https://example.test",
+            wait_until="domcontentloaded",
+            timeout_ms=1000,
+            navigate=True,
+        )
+    second = await manager.get_or_create("run_session")
+    first.page.form_value = "filled in first cycle"
+    async with second.lock:
+        await second.ensure_page(
+            url="https://example.test",
+            wait_until="domcontentloaded",
+            timeout_ms=1000,
+            navigate=False,
+        )
+        await second.ensure_page(
+            url="https://example.test",
+            wait_until="domcontentloaded",
+            timeout_ms=1000,
+            navigate=True,
+        )
+
+    assert first is second
+    assert second.page.form_value == "filled in first cycle"
+    assert first.page.goto_calls == [("https://example.test", {
+        "wait_until": "domcontentloaded",
+        "timeout": 1000,
+    })]
+
+    await manager.close("run_session")
+    assert playwright.chromium.browser.context.close_calls == 1
+    assert playwright.chromium.browser.close_calls == 1
+    assert playwright.stop_calls == 1
+    assert not manager.has("run_session")

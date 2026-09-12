@@ -42,7 +42,17 @@ Rules:
 - <step> must follow the same schema as the initial plan: action_type ({action_types}), \
 target_system ({target_systems}), target, domain, risk_hint, payload.
 - Use the EXACT element role/label from the observation when emitting BROWSER_CLICK/TYPE steps.
-- If the goal is achieved, impossible, or needs user clarification: done=true, next_steps=null.
+- Treat the original user objective as authoritative. Navigation or BROWSER_OPEN only establishes
+  page state; it is NOT completion when the user also asked to fill, type, select, click, submit,
+  pay, inspect, verify, or report a result.
+- After a browser observation exposes actionable controls, emit the next minimal BROWSER_* step(s)
+  needed to carry out the requested interaction. Do not reopen an existing page between replans;
+  the browser session and entered form state are preserved for this run.
+- For form tasks, continue through the requested submit/action and inspect the resulting page when
+  the user asked for verification. Return done=true only when the actual objective is satisfied,
+  impossible, requires user clarification, or has terminally failed; otherwise return actionable
+  next_steps and done=false.
+- If context.completion_check says navigation_only=true and follow_up_required=true, done MUST be false.
 - If a login is required, emit the login steps (fill username/password, submit) using the labels \
 observed on the page. Those steps are NOT "external_send" — use risk_hint "unknown" for them.
 - risk_hint "external_send" is ONLY for API_CALL / connector steps that transmit data to a
@@ -63,6 +73,8 @@ For refunds use risk_hint "refund" and payload {{"action": "create_refund", "pay
 Never invent prices, currencies, redirect URLs, payouts, transfers, or raw Stripe API requests.
 - Keep the batch minimal (1-3 steps). Never invent secrets — leave {{password}} style placeholders \
 in the payload when the value must come from the user.
+- Payment-like BROWSER_CLICK/BROWSER_SUBMIT controls (Pay, Purchase, Checkout, Confirm payment,
+  etc.) must use risk_hint "payment" and remain behind approval.
 - Only emit BROWSER_SCREENSHOT when the user explicitly asked for a screenshot. Never add it for
   observation — use the element labels from the observation instead."""
 

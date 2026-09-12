@@ -144,8 +144,12 @@ def decide_rule(action: ActionRequest) -> DecisionResponse:
     # ── Priority 4: NEED_APPROVAL (risky action types / high-risk domains) ────
     elif risk_hint in need_approval_hints or base_risk in (RiskLevel.CRITICAL, RiskLevel.HIGH):
         decision = Decision.NEED_APPROVAL
-        risk_level = base_risk
-        risk_score = 0.80 if base_risk == RiskLevel.CRITICAL else 0.60
+        # Payment/refund hints are financial actions even when the originating
+        # surface is the otherwise-low-risk browser domain.
+        risk_level = (
+            RiskLevel.CRITICAL if risk_hint in {"payment", "refund"} else base_risk
+        )
+        risk_score = 0.80 if risk_level == RiskLevel.CRITICAL else 0.60
         reasons.append(f"risk_hint={risk_hint}")
         reasons.append(f"domain={domain} has {base_risk.value} risk")
         triggered_policies.append("domain_risk_requires_approval")

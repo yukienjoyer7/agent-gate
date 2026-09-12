@@ -28,6 +28,11 @@ SENSITIVE_KEY_PATTERNS = (
     "credential",
     "authorization",
     "auth",
+    "cvc",
+    "cvv",
+    "card_number",
+    "cardnumber",
+    "card_num",
 )
 
 # Explicit marker shapes: {{name}}, <name>, [name], {name}. The first group
@@ -95,9 +100,7 @@ def detect_sensitive_fields(
             placeholder = _fabricated_label(value)
         if placeholder is not None:
             fields.append({"key": key, "label": _field_label(placeholder)})
-        elif is_sensitive_key(key) and value in ("", None):
-            fields.append({"key": key, "label": _field_label(key)})
-        elif typing_action and key == "value" and value in ("", None):
+        elif is_sensitive_key(key) and value in ("", None) or typing_action and key == "value" and value in ("", None):
             fields.append({"key": key, "label": _field_label(key)})
     return fields
 

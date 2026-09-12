@@ -60,6 +60,26 @@ def test_respond_stores_pending_before_waiter_registered() -> None:
     assert run.waiters == {}
 
 
+def test_public_step_masks_browser_form_values() -> None:
+    step = StepState(
+        index=0,
+        action_id="act_form",
+        data={
+            "action_type": "BROWSER_TYPE",
+            "payload": {"label": "CVC", "value": "123"},
+        },
+        execution={
+            "data": {"action": {"type": "fill", "label": "CVC", "value": "123"}}
+        },
+    )
+
+    public = step.public()
+
+    assert public["payload"]["value"] == "••••"
+    assert public["execution"]["data"]["action"]["value"] == "••••"
+    assert "123" not in str(public)
+
+
 @pytest.mark.asyncio
 async def test_respond_resolves_registered_waiter() -> None:
     registry = RunRegistry()

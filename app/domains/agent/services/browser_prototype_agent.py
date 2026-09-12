@@ -10,6 +10,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from app.config.settings import get_settings
+from app.core.action_request import browser_action_needs_payment_approval
 from app.core.schemas import (
     ActionRequest,
     AuditEvent,
@@ -18,6 +19,7 @@ from app.core.schemas import (
     ExecutionResult,
     ExecutionStatus,
 )
+from app.domains.agent.services.browser_sessions import browser_session_manager
 from app.domains.audit.repositories import get_audit_repository
 from app.domains.browser.browser_profile import DEFAULT_EXTRA_HEADERS, user_agent
 from app.domains.browser.executor import execute_action
@@ -28,10 +30,11 @@ from app.domains.browser.selector_map.matcher import build_matched_elements
 from app.domains.browser.snapshot.snapshotBuilder import (
     build_semantic_elements,
     enrich_semantic_elements,
+    prioritize_interactive_elements,
 )
 from app.domains.guardrail.decision import adecide
 
-SUPPORTED_BROWSER_ACTIONS = {"click", "fill", "submit", "scroll", "screenshot"}
+SUPPORTED_BROWSER_ACTIONS = {"click", "fill", "submit", "select", "scroll", "screenshot"}
 
 # ActionRequest.action_type -> browser action "type" this module executes.
 # Submit maps to Enter-press so search/forms actually execute instead of
@@ -42,7 +45,7 @@ BROWSER_ACTION_TYPE_MAP = {
     "BROWSER_SCROLL": "scroll",
     "BROWSER_SCREENSHOT": "screenshot",
     "BROWSER_SUBMIT": "submit",
-    "BROWSER_SELECT": "click",
+    "BROWSER_SELECT": "select",
 }
 
 
@@ -77,11 +80,25 @@ def plan_step_to_browser_action(step: dict[str, Any]) -> dict[str, Any] | None:
     return browser_action
 
 
+def public_browser_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return safe action summaries for SSE; never expose typed form values."""
+    public: list[dict[str, Any]] = []
+    for action in actions:
+        item = dict(action)
+        if item.get("type") in {"fill", "type"} and "value" in item:
+            item["value"] = "••••"
+        public.append(item)
+    return public
+
+
 @dataclass
 class BrowserPageModel:
     snapshot: list[dict[str, Any]]
     locator_candidates: list[dict[str, Any]]
     selector_map: dict[str, Any]
+    # The complete live model is retained for resolver lookups.  ``snapshot``
+    # is intentionally prioritized/capped before it reaches the replanner.
+    all_snapshot: list[dict[str, Any]] | None = None
 
 
 async def run_browser_prototype_agent(
@@ -97,6 +114,8 @@ async def run_browser_prototype_agent(
     run_id: str | None = None,
     action_id: str | None = None,
     skip_guardrail: bool = False,
+    persist_session: bool | None = None,
+    navigate: bool = True,
 ) -> AuditEvent:
     """
     Browser prototype agent:
@@ -115,6 +134,15 @@ async def run_browser_prototype_agent(
     if wait_until is None:
         wait_until = settings.BROWSER_WAIT_UNTIL
     browser_actions = _normalize_actions(action=action, actions=actions)
+    if persist_session is None:
+        persist_session = run_id is not None
+    if any(
+        browser_action_needs_payment_approval(
+            str(item.get("type") or ""), item, user_goal
+        )
+        for item in browser_actions
+    ):
+        risk_hint = "payment"
     legacy_action = browser_actions[0] if len(browser_actions) == 1 else {}
     request_kwargs: dict[str, Any] = {}
     if run_id:
@@ -162,8 +190,10 @@ async def run_browser_prototype_agent(
             timeout_ms=timeout_ms,
             wait_until=wait_until,
             settle_ms=settle_ms,
+            run_id=request.run_id if persist_session else None,
+            navigate=navigate,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - convert browser failures to an audit event
         execution = ExecutionResult(
             run_id=request.run_id,
             action_id=request.action_id,
@@ -184,9 +214,31 @@ async def _execute_with_browser(
     timeout_ms: int,
     wait_until: str,
     settle_ms: int = 0,
+    run_id: str | None = None,
+    navigate: bool = True,
 ) -> ExecutionResult:
     started = perf_counter()
     settings = get_settings()
+
+    if run_id:
+        session = await browser_session_manager.get_or_create(run_id)
+        async with session.lock:
+            await session.ensure_page(
+                url=url,
+                wait_until=wait_until,
+                timeout_ms=timeout_ms,
+                navigate=navigate,
+            )
+            execution = await _execute_on_page(
+                page=session.page,
+                request=request,
+                url=url,
+                actions=actions,
+                timeout_ms=timeout_ms,
+                settle_ms=settle_ms,
+                started=started,
+            )
+            return execution
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
@@ -202,77 +254,101 @@ async def _execute_with_browser(
                 extra_http_headers=DEFAULT_EXTRA_HEADERS,
             )
             await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-            if settle_ms:
-                await asyncio.sleep(settle_ms / 1000)
-
-            initial_page_model = await _build_page_model(page)
-            page_model = initial_page_model
-            action_results: list[dict[str, Any]] = []
-            executable_actions: list[dict[str, Any]] = []
-            use_indexed_screenshot_paths = len(actions) > 1
-
-            for action_index, browser_action in enumerate(actions, start=1):
-                executable_action = _prepare_action(
-                    action=browser_action,
-                    page_model=page_model,
-                    action_id=request.action_id,
-                    action_index=action_index if use_indexed_screenshot_paths else None,
-                )
-                if executable_action is None:
-                    continue
-
-                await execute_action(page, page_model.selector_map, executable_action)
-                delay_ms = browser_action.get("delay_ms")
-                if delay_ms:
-                    await asyncio.sleep(delay_ms / 1000)
-                executable_actions.append(executable_action)
-                action_results.append(
-                    {
-                        "index": action_index,
-                        "type": executable_action["type"],
-                        "status": "SUCCESS",
-                        "action": executable_action,
-                        "final_url": page.url,
-                    }
-                )
-
-                if action_index < len(actions):
-                    await _settle_page(page, timeout_ms=timeout_ms)
-                    page_model = await _build_page_model(page)
-
-            final_page_model = page_model
-            if actions:
-                await _settle_page(page, timeout_ms=timeout_ms)
-                final_page_model = await _build_page_model(page)
-
-            executed = bool(action_results)
-            legacy_executable_action = (
-                executable_actions[0] if len(executable_actions) == 1 else None
-            )
-
-            return ExecutionResult(
-                run_id=request.run_id,
-                action_id=request.action_id,
-                executor="browser_prototype_agent",
-                status=ExecutionStatus.SUCCESS,
-                result_summary=_result_summary(actions, len(action_results)),
-                data={
-                    "url": url,
-                    "final_url": page.url,
-                    "snapshot": initial_page_model.snapshot,
-                    "selector_map": initial_page_model.selector_map,
-                    "locator_candidates": initial_page_model.locator_candidates,
-                    "final_snapshot": final_page_model.snapshot,
-                    "final_selector_map": final_page_model.selector_map,
-                    "action": legacy_executable_action,
-                    "actions": executable_actions,
-                    "action_results": action_results,
-                    "executed": executed,
-                },
-                latency_ms=int((perf_counter() - started) * 1000),
+            return await _execute_on_page(
+                page=page,
+                request=request,
+                url=url,
+                actions=actions,
+                timeout_ms=timeout_ms,
+                settle_ms=settle_ms,
+                started=started,
             )
         finally:
             await browser.close()
+
+
+async def _execute_on_page(
+    *,
+    page,
+    request: ActionRequest,
+    url: str,
+    actions: list[dict[str, Any]],
+    timeout_ms: int,
+    settle_ms: int,
+    started: float,
+) -> ExecutionResult:
+    if settle_ms:
+        await asyncio.sleep(settle_ms / 1000)
+
+    initial_page_model = await _build_page_model(page)
+    page_model = initial_page_model
+    action_results: list[dict[str, Any]] = []
+    executable_actions: list[dict[str, Any]] = []
+    use_indexed_screenshot_paths = len(actions) > 1
+
+    for action_index, browser_action in enumerate(actions, start=1):
+        executable_action = _prepare_action(
+            action=browser_action,
+            page_model=page_model,
+            action_id=request.action_id,
+            action_index=action_index if use_indexed_screenshot_paths else None,
+        )
+        if executable_action is None:
+            continue
+
+        await execute_action(page, page_model.selector_map, executable_action)
+        delay_ms = browser_action.get("delay_ms")
+        if delay_ms:
+            await asyncio.sleep(delay_ms / 1000)
+        executable_actions.append(executable_action)
+        action_results.append(
+            {
+                "index": action_index,
+                "type": executable_action["type"],
+                "status": "SUCCESS",
+                "action": executable_action,
+                "final_url": page.url,
+            }
+        )
+
+        if action_index < len(actions):
+            await _settle_page(page, timeout_ms=timeout_ms)
+            page_model = await _build_page_model(page)
+
+    final_page_model = page_model
+    if actions:
+        await _settle_page(page, timeout_ms=timeout_ms)
+        final_page_model = await _build_page_model(page)
+
+    executed = bool(action_results)
+    safe_actions = public_browser_actions(executable_actions)
+    safe_action_results = [
+        {**result, "action": public_browser_actions([result["action"]])[0]}
+        for result in action_results
+    ]
+    legacy_executable_action = safe_actions[0] if len(safe_actions) == 1 else None
+
+    return ExecutionResult(
+        run_id=request.run_id,
+        action_id=request.action_id,
+        executor="browser_prototype_agent",
+        status=ExecutionStatus.SUCCESS,
+        result_summary=_result_summary(actions, len(action_results)),
+        data={
+            "url": url,
+            "final_url": page.url,
+            "snapshot": initial_page_model.snapshot,
+            "selector_map": initial_page_model.selector_map,
+            "locator_candidates": initial_page_model.locator_candidates,
+            "final_snapshot": final_page_model.snapshot,
+            "final_selector_map": final_page_model.selector_map,
+            "action": legacy_executable_action,
+            "actions": safe_actions,
+            "action_results": safe_action_results,
+            "executed": executed,
+        },
+        latency_ms=int((perf_counter() - started) * 1000),
+    )
 
 
 async def run_browser_prototype_agent_atomic(
@@ -282,6 +358,8 @@ async def run_browser_prototype_agent_atomic(
     timeout_ms: int | None = None,
     wait_until: Literal["commit", "domcontentloaded", "load", "networkidle"] | None = None,
     settle_ms: int = 0,
+    run_id: str | None = None,
+    navigate: bool = True,
 ) -> list[AuditEvent]:
     """
     Atomized sibling of ``run_browser_prototype_agent``: executes a batch of
@@ -327,6 +405,25 @@ async def run_browser_prototype_agent_atomic(
     # `_execute_with_browser`).
     multi_action = sum(1 for action, _, _ in step_plan if action) > 1
 
+    if run_id:
+        session = await browser_session_manager.get_or_create(run_id)
+        async with session.lock:
+            await session.ensure_page(
+                url=url,
+                wait_until=wait_until,
+                timeout_ms=timeout_ms,
+                navigate=navigate,
+            )
+            return await _execute_atomic_on_page(
+                page=session.page,
+                url=url,
+                step_plan=step_plan,
+                settle_ms=settle_ms,
+                timeout_ms=timeout_ms,
+                multi_action=multi_action,
+                events=events,
+            )
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
             headless=settings.PLAYWRIGHT_HEADLESS,
@@ -341,84 +438,105 @@ async def run_browser_prototype_agent_atomic(
                 extra_http_headers=DEFAULT_EXTRA_HEADERS,
             )
             await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-            if settle_ms:
-                await asyncio.sleep(settle_ms / 1000)
-
-            page_model = await _build_page_model(page)
-            batch_failed = False
-
-            for step_index, (browser_action, request, decision) in enumerate(step_plan, start=1):
-                step_started = perf_counter()
-
-                if batch_failed:
-                    execution = ExecutionResult(
-                        run_id=request.run_id,
-                        action_id=request.action_id,
-                        executor="browser_prototype_agent",
-                        status=ExecutionStatus.SKIPPED,
-                        result_summary="skipped: an earlier action in this batch failed",
-                        latency_ms=0,
-                    )
-                    events.append(await _write_audit(request, decision, execution, step_started))
-                    continue
-
-                try:
-                    if not browser_action:
-                        execution = ExecutionResult(
-                            run_id=request.run_id,
-                            action_id=request.action_id,
-                            executor="browser_prototype_agent",
-                            status=ExecutionStatus.SUCCESS,
-                            result_summary="opened page / built browser snapshot",
-                            data={
-                                "url": url,
-                                "final_url": page.url,
-                                "snapshot": page_model.snapshot,
-                            },
-                            latency_ms=int((perf_counter() - step_started) * 1000),
-                        )
-                    else:
-                        executable_action = _prepare_action(
-                            action=browser_action,
-                            page_model=page_model,
-                            action_id=request.action_id,
-                            action_index=step_index if multi_action else None,
-                        )
-                        await execute_action(page, page_model.selector_map, executable_action)
-                        delay_ms = browser_action.get("delay_ms")
-                        if delay_ms:
-                            await asyncio.sleep(delay_ms / 1000)
-                        execution = ExecutionResult(
-                            run_id=request.run_id,
-                            action_id=request.action_id,
-                            executor="browser_prototype_agent",
-                            status=ExecutionStatus.SUCCESS,
-                            result_summary=f"executed browser action: {browser_action['type']}",
-                            data={
-                                "url": url,
-                                "final_url": page.url,
-                                "action": executable_action,
-                                "snapshot": page_model.snapshot,
-                            },
-                            latency_ms=int((perf_counter() - step_started) * 1000),
-                        )
-                        await _settle_page(page, timeout_ms=timeout_ms)
-                        page_model = await _build_page_model(page)
-                except Exception as exc:  # noqa: BLE001
-                    batch_failed = True
-                    execution = ExecutionResult(
-                        run_id=request.run_id,
-                        action_id=request.action_id,
-                        executor="browser_prototype_agent",
-                        status=ExecutionStatus.FAILED,
-                        result_summary="browser prototype action failed",
-                        error=_error_payload(exc),
-                        latency_ms=int((perf_counter() - step_started) * 1000),
-                    )
-
-                events.append(await _write_audit(request, decision, execution, step_started))
+            return await _execute_atomic_on_page(
+                page=page,
+                url=url,
+                step_plan=step_plan,
+                settle_ms=settle_ms,
+                timeout_ms=timeout_ms,
+                multi_action=multi_action,
+                events=events,
+            )
         finally:
             await browser.close()
+
+
+async def _execute_atomic_on_page(
+    *,
+    page,
+    url: str,
+    step_plan: list[tuple[dict[str, Any] | None, ActionRequest, DecisionResponse]],
+    settle_ms: int,
+    timeout_ms: int,
+    multi_action: bool,
+    events: list[AuditEvent],
+) -> list[AuditEvent]:
+    if settle_ms:
+        await asyncio.sleep(settle_ms / 1000)
+
+    page_model = await _build_page_model(page)
+    batch_failed = False
+
+    for step_index, (browser_action, request, decision) in enumerate(step_plan, start=1):
+        step_started = perf_counter()
+
+        if batch_failed:
+            execution = ExecutionResult(
+                run_id=request.run_id,
+                action_id=request.action_id,
+                executor="browser_prototype_agent",
+                status=ExecutionStatus.SKIPPED,
+                result_summary="skipped: an earlier action in this batch failed",
+                latency_ms=0,
+            )
+            events.append(await _write_audit(request, decision, execution, step_started))
+            continue
+
+        try:
+            if not browser_action:
+                execution = ExecutionResult(
+                    run_id=request.run_id,
+                    action_id=request.action_id,
+                    executor="browser_prototype_agent",
+                    status=ExecutionStatus.SUCCESS,
+                    result_summary="opened page / built browser snapshot",
+                    data={
+                        "url": url,
+                        "final_url": page.url,
+                        "snapshot": page_model.snapshot,
+                    },
+                    latency_ms=int((perf_counter() - step_started) * 1000),
+                )
+            else:
+                executable_action = _prepare_action(
+                    action=browser_action,
+                    page_model=page_model,
+                    action_id=request.action_id,
+                    action_index=step_index if multi_action else None,
+                )
+                await execute_action(page, page_model.selector_map, executable_action)
+                delay_ms = browser_action.get("delay_ms")
+                if delay_ms:
+                    await asyncio.sleep(delay_ms / 1000)
+                execution = ExecutionResult(
+                    run_id=request.run_id,
+                    action_id=request.action_id,
+                    executor="browser_prototype_agent",
+                    status=ExecutionStatus.SUCCESS,
+                    result_summary=f"executed browser action: {browser_action['type']}",
+                    data={
+                        "url": url,
+                        "final_url": page.url,
+                        "action": public_browser_actions([executable_action])[0],
+                        "snapshot": page_model.snapshot,
+                    },
+                    latency_ms=int((perf_counter() - step_started) * 1000),
+                )
+                await _settle_page(page, timeout_ms=timeout_ms)
+                page_model = await _build_page_model(page)
+        except Exception as exc:  # noqa: BLE001
+            batch_failed = True
+            execution = ExecutionResult(
+                run_id=request.run_id,
+                action_id=request.action_id,
+                executor="browser_prototype_agent",
+                status=ExecutionStatus.FAILED,
+                result_summary="browser prototype action failed",
+                error=_error_payload(exc),
+                latency_ms=int((perf_counter() - step_started) * 1000),
+            )
+
+        events.append(await _write_audit(request, decision, execution, step_started))
 
     return events
 
@@ -431,10 +549,14 @@ async def _build_page_model(page) -> BrowserPageModel:
     locator_candidates = build_locator_candidates(matched_elements)
     selector_map = await build_selector_map(page, locator_candidates)
 
+    all_snapshot = _public_snapshot(matched_elements, max_elements=None)
     return BrowserPageModel(
-        snapshot=_public_snapshot(matched_elements),
+        snapshot=prioritize_interactive_elements(
+            all_snapshot, max_elements=getattr(get_settings(), "PLAYWRIGHT_MAX_ELEMENTS", 50)
+        ),
         locator_candidates=locator_candidates,
         selector_map=selector_map,
+        all_snapshot=all_snapshot,
     )
 
 
@@ -479,8 +601,8 @@ def _prepare_action(
     if prepared["element_id"] not in page_model.selector_map:
         raise ValueError(f"element_id not found in selector_map: {prepared['element_id']}")
 
-    if action_type == "fill" and "value" not in prepared:
-        raise ValueError("fill action requires a value")
+    if action_type in {"fill", "select"} and "value" not in prepared:
+        raise ValueError(f"{action_type} action requires a value")
 
     return prepared
 
@@ -498,7 +620,7 @@ def _key_matches_action(
     label = action.get("label") or action.get("element_label") or action.get("text")
     if not label:
         return True  # nothing to cross-check
-    for element in page_model.snapshot:
+    for element in page_model.all_snapshot or page_model.snapshot:
         if element["element_id"] == element_id:
             element_label = element.get("label") or ""
             return (
@@ -529,7 +651,7 @@ def _find_element_id(action: dict[str, Any], page_model: BrowserPageModel) -> st
 
     candidates = [
         element
-        for element in page_model.snapshot
+        for element in page_model.all_snapshot or page_model.snapshot
         if element["element_id"] in page_model.selector_map
     ]
 
@@ -646,8 +768,10 @@ def _normalize_actions(
     return []
 
 
-def _public_snapshot(matched_elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
+def _public_snapshot(
+    matched_elements: list[dict[str, Any]], max_elements: int | None = None
+) -> list[dict[str, Any]]:
+    snapshot = [
         {
             "element_id": element["element_id"],
             "role": element["role"],
@@ -657,6 +781,7 @@ def _public_snapshot(matched_elements: list[dict[str, Any]]) -> list[dict[str, A
         }
         for element in matched_elements
     ]
+    return prioritize_interactive_elements(snapshot, max_elements=max_elements)
 
 
 def _skipped_execution(request: ActionRequest, decision) -> ExecutionResult:
@@ -690,7 +815,20 @@ async def _write_audit(
         "executor_ms": execution.latency_ms,
         "total_ms": int((perf_counter() - total_started) * 1000),
     }
-    return await get_audit_repository().write(request, decision, execution, latency)
+    audit_request = request
+    if request.target_system == "browser":
+        payload = dict(request.payload)
+        for key in ("action",):
+            action = payload.get(key)
+            if isinstance(action, dict):
+                payload[key] = public_browser_actions([action])[0]
+        actions = payload.get("actions")
+        if isinstance(actions, list):
+            payload["actions"] = public_browser_actions(
+                [action for action in actions if isinstance(action, dict)]
+            )
+        audit_request = request.model_copy(update={"payload": payload})
+    return await get_audit_repository().write(audit_request, decision, execution, latency)
 
 
 def _payload_summary(url: str, actions: list[dict[str, Any]]) -> str:

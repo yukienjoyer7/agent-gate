@@ -48,6 +48,12 @@ async def inspect_element(
     aria_label: node.getAttribute("aria-label"),
     test_id: node.dataset.testid || null,
     href: node.getAttribute("href"),
+    options_available: node instanceof HTMLSelectElement
+        ? node.options.length > 0
+        : (node.getAttribute("aria-haspopup") === "listbox" ? true : null),
+    selected: node instanceof HTMLSelectElement
+        ? (node.options[node.selectedIndex]?.textContent || "").trim() || null
+        : node.getAttribute("aria-valuetext"),
     visible: typeof node.checkVisibility === "function" ? node.checkVisibility() : true,
     disabled: Boolean(node.disabled)
 })

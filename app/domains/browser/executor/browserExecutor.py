@@ -11,6 +11,7 @@ Supported Actions
 -----------------
 - click
 - fill
+- select
 - scroll
 - screenshot
 
@@ -22,11 +23,12 @@ Locator Ranker.
 ==========================================================
 """
 
+import asyncio
 from pathlib import Path
 
-import asyncio
 from app.domains.browser.executor.actionability import ensure_actionable
 from app.domains.browser.executor.locatorResolver import resolve_locator
+
 
 # Click
 async def click(
@@ -69,6 +71,31 @@ async def fill(
 
     await locator.fill(value)
 
+# Select
+async def select(
+    page,
+    selector_map,
+    element_id,
+    value,
+):
+    locator = await resolve_locator(
+        page,
+        selector_map,
+        element_id,
+    )
+
+    await ensure_actionable(
+        page,
+        locator,
+    )
+
+    # Prefer the visible option label because that is what the accessibility
+    # snapshot exposes; fall back to the HTML option value when necessary.
+    try:
+        await locator.select_option(label=value)
+    except Exception:  # noqa: BLE001 - preserve value-based fallback
+        await locator.select_option(value=value)
+
 # Submit
 async def submit(
     page,
@@ -100,7 +127,8 @@ async def scroll(
     *,
     x=0,
     y=0,
-    duration_ms=0
+    duration_ms=0,
+    top=False,
 ):
 
     if element_id:
@@ -127,7 +155,7 @@ async def scroll(
             await asyncio.sleep(0.05)
         return
 
-    if action.get("top"):
+    if top:
         await page.evaluate("window.scrollTo(0, 0)")
         return
 
@@ -179,6 +207,15 @@ async def execute_action(
             action["value"]
         )
 
+    elif action_type == "select":
+
+        await select(
+            page,
+            selector_map,
+            action["element_id"],
+            action["value"],
+        )
+
     elif action_type == "submit":
 
         await submit(
@@ -196,6 +233,7 @@ async def execute_action(
             x=action.get("x", 0),
             y=action.get("y", 0),
             duration_ms=action.get("duration_ms", 0),
+            top=action.get("top", False),
         )
 
     elif action_type == "screenshot":

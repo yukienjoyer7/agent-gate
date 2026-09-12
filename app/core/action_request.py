@@ -7,6 +7,35 @@ from app.domains.connector.calendar.contract import (
     normalize_create_event_payload,
 )
 
+_BROWSER_FINANCIAL_TERMS = (
+    "pay",
+    "payment",
+    "purchase",
+    "checkout",
+    "buy",
+    "donate",
+    "subscribe",
+    "place order",
+    "confirm order",
+    "confirm payment",
+)
+
+
+def browser_action_needs_payment_approval(
+    action_type: str, payload: dict[str, Any], user_goal: str = ""
+) -> bool:
+    """Classify payment-like browser submissions without site-specific rules."""
+    if action_type not in {"BROWSER_CLICK", "BROWSER_SUBMIT", "click", "submit"}:
+        return False
+    label = " ".join(
+        str(payload.get(key) or "")
+        for key in ("label", "element_label", "text", "action")
+    ).lower()
+    if any(term in label for term in _BROWSER_FINANCIAL_TERMS):
+        return True
+    return action_type in {"BROWSER_SUBMIT", "submit"} and any(
+        term in user_goal.lower() for term in _BROWSER_FINANCIAL_TERMS
+    )
 
 def build_action_request(proposal: dict[str, Any]) -> ActionRequest:
     payload = proposal.get("payload") or {}
@@ -27,6 +56,13 @@ def build_action_request(proposal: dict[str, Any]) -> ActionRequest:
         elif stripe_action == "create_refund":
             risk_hint = "refund"
         payload_summary = summarize_stripe_payload(payload)
+    elif target_system == "browser" and browser_action_needs_payment_approval(
+        proposal["action_type"], payload, str(proposal.get("user_goal") or "")
+    ):
+        # A click/submit on a payment control is a financial action even when
+        # the planner labels the surrounding page as low-risk.  Filling a form
+        # remains separate; only the transaction action reaches approval.
+        risk_hint = "payment"
     if target_system == "calendar" and payload.get("action") == "create_event":
         # A direct API caller cannot downgrade a Calendar write. Missing event
         # details pause on the existing clarification flow instead of being

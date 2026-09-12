@@ -27,6 +27,27 @@ from app.core.schemas import new_id
 from app.domains.guardrail.sensitive import is_sensitive_key
 
 
+def _mask_execution(value: Any) -> Any:
+    """Mask browser-entered values before exposing execution over SSE."""
+    if isinstance(value, dict):
+        action_type = str(value.get("type") or value.get("action_type") or "").lower()
+        masked: dict[str, Any] = {}
+        for key, item in value.items():
+            if (
+                key == "value"
+                and action_type in {"fill", "type"}
+                or is_sensitive_key(str(key))
+                and item not in ("", None)
+            ):
+                masked[key] = "••••"
+            else:
+                masked[key] = _mask_execution(item)
+        return masked
+    if isinstance(value, list):
+        return [_mask_execution(item) for item in value]
+    return value
+
+
 @dataclass
 class StepState:
     """One plan step inside an active run, with its live lifecycle state."""
@@ -49,10 +70,14 @@ class StepState:
         data = dict(self.data)
         payload = data.get("payload")
         if isinstance(payload, dict):
+            browser_typing = data.get("action_type") in {"BROWSER_TYPE", "BROWSER_SELECT"}
             payload = {
                 key: (
                     "\u2022\u2022\u2022\u2022"
-                    if is_sensitive_key(key) and value not in ("", None)
+                    if (
+                        (is_sensitive_key(key) or (browser_typing and key == "value"))
+                        and value not in ("", None)
+                    )
                     else value
                 )
                 for key, value in payload.items()
@@ -76,7 +101,7 @@ class StepState:
             "action_id": self.action_id,
             "status": self.status.value,
             "decision": self.decision,
-            "execution": self.execution,
+            "execution": _mask_execution(self.execution),
         }
 
 

@@ -97,6 +97,7 @@ def _no_llm_or_io(monkeypatch):
 
     monkeypatch.setattr(agent_loop, "parse_next_steps", fake_replan)
     monkeypatch.setattr(agent_loop, "get_audit_repository", lambda: _FakeAuditRepo())
+    monkeypatch.setenv("ATOMIC_BROWSER_AUDIT", "false")
 
 
 @pytest.mark.asyncio
@@ -125,6 +126,122 @@ async def test_happy_browser_path(monkeypatch):
     assert run.steps[0].status == StepStatus.DONE
     assert browser_calls[0]["run_id"] == run.run_id
     assert browser_calls[0]["skip_guardrail"] is True
+
+
+@pytest.mark.asyncio
+async def test_browser_open_replans_before_done_for_incomplete_objective(monkeypatch):
+    """Opening a page is only an observation when the prompt requests a click."""
+    browser_calls: list[dict] = []
+    replan_contexts: list[dict] = []
+
+    async def fake_plan(prompt):
+        return {"plan": [_open_step()], "llm_provider": "dummy", "raw_prompt": prompt}
+
+    async def fake_replan(prompt, context):
+        replan_contexts.append(context)
+        if len(replan_contexts) == 1:
+            return [
+                {
+                    "action_type": "BROWSER_CLICK",
+                    "target_system": "browser",
+                    "target": "https://example.test",
+                    "domain": "browser",
+                    "risk_hint": "unknown",
+                    "payload": {"label": "Continue", "role": "button"},
+                }
+            ]
+        return []
+
+    async def fake_browser(**kwargs):
+        browser_calls.append(kwargs)
+        return _event(
+            kwargs["run_id"],
+            kwargs["action_id"],
+            data={
+                "final_url": kwargs["url"],
+                "final_snapshot": [
+                    {
+                        "element_id": "continue",
+                        "role": "button",
+                        "label": "Continue",
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
+    monkeypatch.setattr(agent_loop, "parse_next_steps", fake_replan)
+    monkeypatch.setattr(agent_loop, "run_browser_prototype_agent", fake_browser)
+
+    run = run_registry.create("Open the page, then click Continue and report the result")
+    await asyncio.wait_for(agent_loop.run_agent_loop(run), timeout=5)
+
+    assert run.status == RunStatus.DONE
+    assert len(browser_calls) == 2
+    assert len(replan_contexts) == 2
+    assert replan_contexts[0]["completion_check"] == {
+        "navigation_only": True,
+        "follow_up_required": True,
+    }
+    assert replan_contexts[0]["latest_observation"]
+    assert [step.data["action_type"] for step in run.steps] == [
+        "BROWSER_OPEN",
+        "BROWSER_CLICK",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_browser_open_cannot_be_declared_done_when_replanner_returns_no_action(
+    monkeypatch,
+):
+    async def fake_plan(prompt):
+        return {"plan": [_open_step()], "llm_provider": "dummy", "raw_prompt": prompt}
+
+    async def fake_browser(**kwargs):
+        return _event(kwargs["run_id"], kwargs["action_id"], data={"final_url": kwargs["url"]})
+
+    async def fake_replan(prompt, context):
+        return []
+
+    monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
+    monkeypatch.setattr(agent_loop, "parse_next_steps", fake_replan)
+    monkeypatch.setattr(agent_loop, "run_browser_prototype_agent", fake_browser)
+
+    run = run_registry.create("Open the page and fill the email form")
+    await asyncio.wait_for(agent_loop.run_agent_loop(run), timeout=5)
+
+    assert run.status == RunStatus.FAILED
+    assert any(event["type"] == "error" for event in run.events._queue)
+
+
+@pytest.mark.asyncio
+async def test_browser_session_cleanup_runs_on_cancellation(monkeypatch):
+    started = asyncio.Event()
+    cleanup_calls: list[str] = []
+
+    async def fake_plan(prompt):
+        return {"plan": [_open_step()], "llm_provider": "dummy", "raw_prompt": prompt}
+
+    async def fake_browser(**kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    async def fake_cleanup(run_id):
+        cleanup_calls.append(run_id)
+
+    monkeypatch.setattr(agent_loop, "parse_prompt_plan", fake_plan)
+    monkeypatch.setattr(agent_loop, "run_browser_prototype_agent", fake_browser)
+    monkeypatch.setattr(agent_loop, "close_browser_session", fake_cleanup)
+
+    run = run_registry.create("open example")
+    task = asyncio.create_task(agent_loop.run_agent_loop(run))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert run.status == RunStatus.CANCELLED
+    assert cleanup_calls == [run.run_id]
 
 
 @pytest.mark.asyncio
@@ -169,6 +286,36 @@ async def test_approval_then_execute(monkeypatch):
     assert decision.decision.value == "ALLOW"
     assert "approved by user" in decision.reasons
     assert proposal["run_id"] == run.run_id
+
+
+@pytest.mark.asyncio
+async def test_browser_payment_click_requires_approval(monkeypatch):
+    step = StepState(
+        index=0,
+        action_id="act_pay",
+        data={
+            "action_type": "BROWSER_CLICK",
+            "target_system": "browser",
+            "target": "https://checkout.example.test",
+            "domain": "browser",
+            "risk_hint": "unknown",
+            "payload": {"label": "Pay now", "role": "button"},
+        },
+    )
+    run = run_registry.create("click the Pay now button")
+    run.steps.append(step)
+
+    task = asyncio.create_task(agent_loop._guardrail_step(run, step))
+    await _wait_for(lambda: run.status == RunStatus.WAITING_APPROVAL)
+
+    assert step.decision["decision"] == Decision.NEED_APPROVAL
+    assert step.decision["risk_level"] == "CRITICAL"
+    run_registry.respond(run, 0, "approve")
+    decision = await asyncio.wait_for(task, timeout=5)
+
+    assert decision is not None
+    assert decision.decision == Decision.ALLOW
+    assert decision.initial_decision == Decision.NEED_APPROVAL
 
 
 @pytest.mark.asyncio
@@ -635,7 +782,7 @@ async def test_atomic_browser_audit_writes_one_row_per_step(monkeypatch):
 
     atomic_calls: list[dict] = []
 
-    async def fake_browser_atomic(*, url, step_plan, settle_ms=0):
+    async def fake_browser_atomic(*, url, step_plan, settle_ms=0, run_id=None, navigate=True):
         atomic_calls.append({"url": url, "step_plan": step_plan})
         return [
             _event(request.run_id, request.action_id, data={"final_url": url})
@@ -688,7 +835,7 @@ async def test_atomic_browser_audit_marks_remaining_steps_skipped_on_failure(mon
             "human_readable": "",
         }
 
-    async def fake_browser_atomic(*, url, step_plan, settle_ms=0):
+    async def fake_browser_atomic(*, url, step_plan, settle_ms=0, run_id=None, navigate=True):
         first_request = step_plan[0][1]
         second_request = step_plan[1][1]
         return [

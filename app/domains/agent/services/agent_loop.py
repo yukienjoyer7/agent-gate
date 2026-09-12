@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 from app.config.settings import get_settings
@@ -45,12 +46,15 @@ from app.core.schemas import (
 from app.domains.agent.services.agent_planner import parse_next_steps
 from app.domains.agent.services.browser_prototype_agent import (
     plan_step_to_browser_action,
+    public_browser_actions,
     run_browser_prototype_agent,
     run_browser_prototype_agent_atomic,
 )
+from app.domains.agent.services.browser_sessions import close_browser_session
 from app.domains.agent.services.guarded_execution import run_guarded_action
 from app.domains.agent.services.run_registry import RunSession, StepState
 from app.domains.audit.repositories import get_audit_repository
+from app.domains.browser.snapshot.snapshotBuilder import prioritize_interactive_elements
 from app.domains.connector.calendar.contract import (
     missing_create_event_fields,
     normalize_create_event_payload,
@@ -86,14 +90,24 @@ async def run_agent_loop(run: RunSession) -> None:
                 break
             if (outcome == "had_failure" or _all_processed(run)) and not await _maybe_replan(run):
                 break
+    except asyncio.CancelledError:
+        run.status = RunStatus.CANCELLED
+        raise
     except Exception as exc:  # surface everything to the client
         logger.exception("agent loop failed for run %s", run.run_id)
         run.status = RunStatus.ERROR
         _emit(run, "error", {"run_id": run.run_id, "message": str(exc)[:500]})
         return
+    finally:
+        await close_browser_session(run.run_id)
 
     if run.status == RunStatus.RUNNING:
-        run.status = RunStatus.DONE
+        if _browser_goal_still_needs_interaction(run):
+            _fail_incomplete_browser_goal(
+                run, "browser objective could not be completed before the run step limit"
+            )
+        else:
+            run.status = RunStatus.DONE
     _emit(
         run, "done", {"run_id": run.run_id, "status": run.status.value, "steps": run.public_steps()}
     )
@@ -118,6 +132,8 @@ async def _maybe_replan(run: RunSession) -> bool:
     """Ask the replanner for the next step(s). False = run is complete."""
     settings = get_settings()
     if run.replan_count >= settings.AGENT_MAX_REPLAN:
+        if _browser_goal_still_needs_interaction(run):
+            _fail_incomplete_browser_goal(run, "browser replanning limit reached before completion")
         return False
     if not run.steps and not run.execution_log:
         return False
@@ -126,17 +142,28 @@ async def _maybe_replan(run: RunSession) -> bool:
     _emit(run, "replanning", {"run_id": run.run_id, "iteration": run.replan_count})
 
     context = {
+        "original_user_objective": run.prompt,
         "executed_steps": run.execution_log,
         "latest_observation": run.last_observation,
+        "latest_execution": run.execution_log[-1] if run.execution_log else None,
         "remaining_plan": [
             step.public() for step in run.steps if step.status == StepStatus.PENDING
         ],
+        "completion_check": {
+            "navigation_only": _browser_navigation_only(run),
+            "follow_up_required": _browser_goal_still_needs_interaction(run),
+        },
     }
     next_steps = await parse_next_steps(run.prompt, context)
     for data in next_steps:
         run.steps.append(StepState(index=len(run.steps), data=data, action_id=new_id("act")))
     if next_steps:
         _emit_plan(run)
+    elif _browser_goal_still_needs_interaction(run):
+        _fail_incomplete_browser_goal(
+            run,
+            "replanner returned no browser action although the original objective still requires interaction",
+        )
     return bool(next_steps)
 
 
@@ -519,7 +546,7 @@ async def _execute_browser_batch(run: RunSession, steps: list[StepState]) -> str
             "index": [step.index for step in steps],
             "target_system": "browser",
             "url": url,
-            "actions": actions,
+            "actions": public_browser_actions(actions),
         },
     )
 
@@ -537,6 +564,8 @@ async def _execute_browser_batch(run: RunSession, steps: list[StepState]) -> str
             action_id=steps[0].action_id,
             skip_guardrail=True,
             settle_ms=get_settings().BROWSER_SETTLE_MS,
+            persist_session=True,
+            navigate=steps[0].data.get("action_type") in {"BROWSER_OPEN", "BROWSER_SNAPSHOT"},
         )
     except Exception as exc:
         logger.exception("browser batch failed for run %s", run.run_id)
@@ -557,6 +586,7 @@ async def _execute_browser_batch(run: RunSession, steps: list[StepState]) -> str
         {
             "index": [step.index for step in steps],
             "action_type": steps[0].data.get("action_type"),
+            "action_types": [step.data.get("action_type") for step in steps],
             "status": "done" if ok else "failed",
             "summary": (execution or {}).get("result_summary", ""),
         }
@@ -600,6 +630,8 @@ async def _execute_browser_batch_atomic(
             url=url,
             step_plan=step_plan,
             settle_ms=get_settings().BROWSER_SETTLE_MS,
+            run_id=run.run_id,
+            navigate=steps[0].data.get("action_type") in {"BROWSER_OPEN", "BROWSER_SNAPSHOT"},
         )
     except Exception as exc:
         logger.exception("atomic browser batch failed for run %s", run.run_id)
@@ -623,6 +655,7 @@ async def _execute_browser_batch_atomic(
             {
                 "index": [step.index for step in steps],
                 "action_type": steps[0].data.get("action_type"),
+                "action_types": [step.data.get("action_type") for step in steps],
                 "status": "failed",
                 "summary": error_message,
             }
@@ -653,6 +686,7 @@ async def _execute_browser_batch_atomic(
         {
             "index": [step.index for step in steps],
             "action_type": steps[0].data.get("action_type"),
+            "action_types": [step.data.get("action_type") for step in steps],
             "status": "failed" if had_failure else "done",
             "summary": observation_event.execution_json.get("result_summary", ""),
         }
@@ -873,6 +907,72 @@ def _all_processed(run: RunSession) -> bool:
     return all(step.status != StepStatus.PENDING for step in run.steps)
 
 
+_BROWSER_FOLLOW_UP_TERMS = (
+    "fill",
+    "type",
+    "enter",
+    "input",
+    "complete",
+    "submit",
+    "click",
+    "press",
+    "select",
+    "choose",
+    "check",
+    "login",
+    "log in",
+    "pay",
+    "purchase",
+    "checkout",
+    "inspect",
+    "verify",
+    "form",
+    "resulting page",
+    "report success",
+    "report failure",
+    "report",
+    "describe",
+    "summarize",
+)
+_BROWSER_NAVIGATION_ACTIONS = {"BROWSER_OPEN", "BROWSER_SNAPSHOT"}
+
+
+def _browser_navigation_only(run: RunSession) -> bool:
+    browser_entries = [
+        entry
+        for entry in run.execution_log
+        if isinstance(entry, dict) and entry.get("action_type", "").startswith("BROWSER_")
+    ]
+    if not browser_entries:
+        return False
+    action_types: list[str] = []
+    for entry in browser_entries:
+        values = entry.get("action_types") or [entry.get("action_type")]
+        action_types.extend(str(value) for value in values if value)
+    return bool(action_types) and all(
+        action in _BROWSER_NAVIGATION_ACTIONS for action in action_types
+    )
+
+
+def _browser_goal_still_needs_interaction(run: RunSession) -> bool:
+    """Conservative completion guard for navigation-only browser runs."""
+    if not _browser_navigation_only(run):
+        return False
+    prompt = run.prompt.casefold()
+    return any(re.search(rf"\b{re.escape(term)}\b", prompt) for term in _BROWSER_FOLLOW_UP_TERMS)
+
+
+def _fail_incomplete_browser_goal(run: RunSession, message: str) -> None:
+    if run.status != RunStatus.RUNNING:
+        return
+    run.status = RunStatus.FAILED
+    logger.error(
+        "browser objective did not reach an interaction step",
+        extra={"run_id": run.run_id, "detail": message},
+    )
+    _emit(run, "error", {"run_id": run.run_id, "message": message})
+
+
 def _browser_observation(event, error_message: str) -> str:
     if event is None:
         return f"error={error_message}"
@@ -890,7 +990,23 @@ def _browser_observation(event, error_message: str) -> str:
             )
         )
     snapshot = data.get("final_snapshot") or data.get("snapshot") or []
-    elements = [f"{e.get('role')}:{e.get('label')}" for e in snapshot[:15]]
+    elements: list[str] = []
+    for element in prioritize_interactive_elements(
+        snapshot, max_elements=getattr(get_settings(), "PLAYWRIGHT_MAX_ELEMENTS", 50)
+    ):
+        role = element.get("role") or "element"
+        label = element.get("label") or ""
+        element_id = element.get("element_id")
+        prefix = f"[{element_id}] " if element_id else ""
+        description = f"{prefix}{role}:{label}"
+        dom = element.get("dom") or {}
+        if role == "combobox":
+            selected = dom.get("selected")
+            if selected:
+                description += f" (selected: {selected})"
+            if dom.get("options_available"):
+                description += " (options_available: true)"
+        elements.append(description)
     if elements:
         parts.append("visible=" + ", ".join(elements))
     error = event.execution_json.get("error") or {}

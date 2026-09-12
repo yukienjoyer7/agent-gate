@@ -28,6 +28,24 @@ INTERACTIVE_ROLES = {
     "option",
 }
 
+# Native selects can contribute hundreds of ``option`` nodes.  Keep the
+# actionable controls at the front of both planner and runtime snapshots.
+ACTIONABLE_ROLE_PRIORITY = {
+    "textbox": 0,
+    "searchbox": 0,
+    "spinbutton": 0,
+    "button": 1,
+    "checkbox": 2,
+    "radio": 3,
+    "switch": 3,
+    "combobox": 4,
+    "link": 5,
+    "textarea": 6,
+    "tab": 7,
+    "menuitem": 7,
+    "option": 99,
+}
+
 
 async def build_semantic_elements(page) -> list[dict[str, str]]:
     body = page.locator("body")
@@ -55,6 +73,29 @@ def enrich_semantic_elements(elements: list[dict[str, str]]) -> list[dict[str, s
         }
         for element in elements
     ]
+
+
+def prioritize_interactive_elements(
+    elements: list[dict[str, Any]], max_elements: int | None = None
+) -> list[dict[str, Any]]:
+    """Prioritize actionable controls and avoid option floods.
+
+    Element order is stable within each role priority. Options are retained
+    only when a page contains no other actionable element; the combobox/select
+    itself remains visible with compact selection metadata.
+    """
+    indexed = list(enumerate(elements))
+
+    def role_of(item: dict[str, Any]) -> str:
+        semantic = item.get("semantic")
+        return str((semantic or {}).get("role") or item.get("role") or "").lower()
+
+    actionable = [(index, item) for index, item in indexed if role_of(item) != "option"]
+    candidates = actionable or indexed
+    candidates.sort(key=lambda pair: (ACTIONABLE_ROLE_PRIORITY.get(role_of(pair[1]), 50), pair[0]))
+    if max_elements is None:
+        return [item for _, item in candidates]
+    return [item for _, item in candidates[:max_elements]]
 
 
 def parse_node(node: Any, output: list[dict[str, str]]) -> None:
