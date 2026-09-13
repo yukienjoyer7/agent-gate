@@ -112,6 +112,27 @@ def test_still_finds_legacy_dismiss_keywords():
     assert len(candidates) == 4
 
 
+def test_dismiss_words_do_not_match_functional_controls():
+    assert (
+        find_popup_candidates(
+            [
+                _button("Close account"),
+                _button("Cancel payment"),
+                _button("Skip verification"),
+                _button("Accept order"),
+                _button("Allow access"),
+                _button("Customize order"),
+            ]
+        )
+        == []
+    )
+
+
+def test_dismiss_labels_normalize_whitespace_and_case():
+    candidates = find_popup_candidates([_button("  ACCEPT   ALL  "), _button("No Thanks")])
+    assert len(candidates) == 2
+
+
 def test_filter_popup_matched_returns_only_candidates():
     """The filter must return only the matched elements whose (role, label)
     correspond to a popup candidate — never arbitrary elements like nav links

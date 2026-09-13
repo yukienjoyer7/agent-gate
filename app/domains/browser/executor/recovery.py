@@ -25,41 +25,21 @@ POPUP_KEYWORDS = {
     "close",
     "dismiss",
     "skip",
-    "later",
-    "cancel",
+    "maybe later",
     "not now",
     "no thanks",
-
     # Consent / cookies
-    "accept",
     "accept all",
-    "allow",
-    "agree",
-    "i agree",
-    "got it",
-    "ok",
-    "okay",
-    "continue",
-
+    "accept all cookies",
+    "reject all cookies",
     # Google / YouTube
-    "reject",
     "reject all",
-    "manage options",
-    "customize",
-
     # Indonesian
     "tutup",
     "lewati",
-    "batal",
     "nanti",
-    "setuju",
-    "terima",
-    "izinkan",
-    "tolak",
-
-    "×",
-    "✕",
-    "x",
+    "terima semua",
+    "tolak semua",
 }
 
 # Single-character close glyphs (e.g. "×" on a dialog) match only when the
@@ -69,10 +49,10 @@ _CLOSE_LABELS = {"x", "×", "✕"}
 
 
 def _is_popup_label(label: str) -> bool:
-    text = (label or "").lower()
-    if text in _CLOSE_LABELS:
-        return True
-    return any(keyword in text for keyword in POPUP_KEYWORDS)
+    # Without dialog context, only explicit dismissal labels are safe. A
+    # substring such as "close" also matches a functional "Close account".
+    text = " ".join((label or "").casefold().split())
+    return text in _CLOSE_LABELS or text in POPUP_KEYWORDS
 
 
 def find_popup_candidates(elements):
@@ -81,16 +61,9 @@ def find_popup_candidates(elements):
 
     for element in elements:
 
-        label = (
-            element.get("label")
-            or element.get("aria_label")
-            or ""
-        ).lower()
+        label = (element.get("label") or element.get("aria_label") or "").lower()
 
-        role = (
-            element.get("role")
-            or ""
-        ).lower()
+        role = (element.get("role") or "").lower()
 
         if role != "button":
             continue
@@ -105,8 +78,7 @@ def _filter_popup_matched(candidates, matched_elements):
     """Return only the matched (element_id-carrying) forms of the popup
     candidates, keyed by (role, label)."""
     candidate_keys = {
-        (candidate.get("role") or "", candidate.get("label") or "")
-        for candidate in candidates
+        (candidate.get("role") or "", candidate.get("label") or "") for candidate in candidates
     }
     return [
         element
@@ -155,59 +127,40 @@ async def _dismiss_consent_in_frames(page):
             continue
     return False
 
+
 async def recover_popup(page):
 
     semantic = await build_semantic_elements(page)
 
-    semantic = enrich_semantic_elements(
-        semantic
-    )
+    semantic = enrich_semantic_elements(semantic)
 
     candidates = find_popup_candidates(semantic)
 
     if not candidates:
         return False
 
-    metadata = await build_execution_metadata(
-        page,
-        semantic
-    )
+    metadata = await build_execution_metadata(page, semantic)
 
-    matched_elements = build_matched_elements(
-        semantic,
-        metadata
-    )
+    matched_elements = build_matched_elements(semantic, metadata)
 
     # Click ONLY the popup-candidate buttons (consent dialogs, banners), never
     # an arbitrary matched element — clicking a random control (e.g. the
     # "Guide" button or a nav link) dismisses nothing and could even navigate
     # away. Match candidates back to their matched (element_id-carrying) forms.
-    popup_matched = _filter_popup_matched(
-        candidates,
-        matched_elements
-    )
+    popup_matched = _filter_popup_matched(candidates, matched_elements)
 
     if not popup_matched:
         return False
 
-    locator_candidates = build_locator_candidates(
-        popup_matched
-    )
+    locator_candidates = build_locator_candidates(popup_matched)
 
-    selector_map = await build_selector_map(
-        page,
-        locator_candidates
-    )
+    selector_map = await build_selector_map(page, locator_candidates)
 
     for element in popup_matched:
 
         try:
 
-            locator = await resolve_locator(
-                page,
-                selector_map,
-                element["element_id"]
-            )       
+            locator = await resolve_locator(page, selector_map, element["element_id"])
 
             await locator.click()
 
@@ -230,7 +183,7 @@ async def recover(page):
     if await try_cookie_buttons(page):
         await page.wait_for_timeout(500)
         return
-    
+
     closed = await recover_popup(page)
 
     if closed:
@@ -248,6 +201,7 @@ async def recover(page):
         await page.wait_for_timeout(300)
 
     return
+
 
 async def try_cookie_buttons(page):
     candidates = [
