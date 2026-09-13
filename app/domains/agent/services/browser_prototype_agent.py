@@ -20,6 +20,10 @@ from app.core.schemas import (
     ExecutionStatus,
 )
 from app.domains.agent.services.browser_sessions import browser_session_manager
+from app.domains.agent.services.browser_adapter import (
+    plan_step_to_browser_action as plan_step_to_browser_action,
+    public_browser_actions,
+)
 from app.domains.audit.repositories import get_audit_repository
 from app.domains.browser.browser_profile import DEFAULT_EXTRA_HEADERS, user_agent
 from app.domains.browser.executor import execute_action
@@ -33,6 +37,7 @@ from app.domains.browser.snapshot.snapshotBuilder import (
     prioritize_interactive_elements,
 )
 from app.domains.guardrail.decision import adecide
+from app.runtime.context import current_runtime
 
 SUPPORTED_BROWSER_ACTIONS = {"click", "fill", "submit", "select", "scroll", "screenshot"}
 
@@ -47,48 +52,6 @@ BROWSER_ACTION_TYPE_MAP = {
     "BROWSER_SUBMIT": "submit",
     "BROWSER_SELECT": "select",
 }
-
-
-def plan_step_to_browser_action(step: dict[str, Any]) -> dict[str, Any] | None:
-    """Convert one plan-step dict (``action_type`` + ``payload``) into the
-    ``{"type": ..., ...}`` action this module's executor consumes.
-
-    Returns ``None`` for steps with no browser-action equivalent (e.g.
-    ``BROWSER_OPEN``/``BROWSER_SNAPSHOT``, which just navigate + snapshot).
-    """
-    browser_type = BROWSER_ACTION_TYPE_MAP.get(step.get("action_type"))
-    if not browser_type:
-        return None
-
-    payload = step.get("payload", {})
-    payload = payload if isinstance(payload, dict) else {}
-    browser_action: dict[str, Any] = {"type": browser_type}
-    for key in ("label", "element_id", "role"):
-        if payload.get(key):
-            browser_action[key] = payload[key]
-
-    value = payload.get("value") or payload.get("query") or payload.get("text")
-    if value:
-        browser_action["value"] = value
-
-    for key in ("delay_ms", "duration_ms", "x", "y", "path", "full_page"):
-        if key in payload:
-            browser_action[key] = payload[key]
-        elif key in step:
-            browser_action[key] = step[key]
-
-    return browser_action
-
-
-def public_browser_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return safe action summaries for SSE; never expose typed form values."""
-    public: list[dict[str, Any]] = []
-    for action in actions:
-        item = dict(action)
-        if item.get("type") in {"fill", "type"} and "value" in item:
-            item["value"] = "••••"
-        public.append(item)
-    return public
 
 
 @dataclass
@@ -137,9 +100,7 @@ async def run_browser_prototype_agent(
     if persist_session is None:
         persist_session = run_id is not None
     if any(
-        browser_action_needs_payment_approval(
-            str(item.get("type") or ""), item, user_goal
-        )
+        browser_action_needs_payment_approval(str(item.get("type") or ""), item, user_goal)
         for item in browser_actions
     ):
         risk_hint = "payment"
@@ -388,10 +349,8 @@ async def run_browser_prototype_agent_atomic(
     "abort the rest of the batch" behavior of the combined path, just with
     per-step audit visibility into exactly where it stopped.
 
-    ADDITIVE ONLY: nothing calls this yet. It does not change
-    ``run_browser_prototype_agent`` or any existing caller. Phase 2 wires
-    this into ``agent_loop._execute_browser_batch``, gated behind
-    ``settings.ATOMIC_BROWSER_AUDIT``.
+    The reactive agent uses this path when ``settings.ATOMIC_BROWSER_AUDIT``
+    is enabled. Local runtimes also record execution intents before each action.
     """
     settings = get_settings()
     if timeout_ms is None:
@@ -469,6 +428,9 @@ async def _execute_atomic_on_page(
 
     for step_index, (browser_action, request, decision) in enumerate(step_plan, start=1):
         step_started = perf_counter()
+        runtime = current_runtime()
+        journal = runtime.intents if runtime is not None else None
+        intent_key = None
 
         if batch_failed:
             execution = ExecutionResult(
@@ -483,6 +445,11 @@ async def _execute_atomic_on_page(
             continue
 
         try:
+            if journal is not None:
+                intent_key, previous = journal.begin(request)
+                if previous is not None:
+                    events.append(await _write_audit(request, decision, previous, step_started))
+                    continue
             if not browser_action:
                 execution = ExecutionResult(
                     run_id=request.run_id,
@@ -524,6 +491,10 @@ async def _execute_atomic_on_page(
                 )
                 await _settle_page(page, timeout_ms=timeout_ms)
                 page_model = await _build_page_model(page)
+        except asyncio.CancelledError:
+            if journal is not None and intent_key is not None:
+                journal.unknown(intent_key)
+            raise
         except Exception as exc:  # noqa: BLE001
             batch_failed = True
             execution = ExecutionResult(
@@ -536,6 +507,8 @@ async def _execute_atomic_on_page(
                 latency_ms=int((perf_counter() - step_started) * 1000),
             )
 
+        if journal is not None and intent_key is not None:
+            journal.finish(intent_key, request, execution)
         events.append(await _write_audit(request, decision, execution, step_started))
 
     return events
@@ -577,7 +550,14 @@ def _prepare_action(
     prepared = dict(action)
     if action_type == "screenshot":
         suffix = f"_{action_index:02d}" if action_index is not None else ""
-        prepared.setdefault("path", f"data/browser/screenshots/{action_id}{suffix}.png")
+        runtime = current_runtime()
+        if runtime is not None:
+            from pathlib import Path
+
+            directory = Path(runtime.settings.DATA_DIR) / "browser" / "screenshots"
+            prepared["path"] = str(directory / f"{action_id}{suffix}.png")
+        else:
+            prepared.setdefault("path", f"data/browser/screenshots/{action_id}{suffix}.png")
         return prepared
 
     if action_type == "scroll" and not (prepared.get("element_id") or prepared.get("label")):

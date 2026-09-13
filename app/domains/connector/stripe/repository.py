@@ -10,7 +10,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.stripe_payment import StripePayment, StripeWebhookEvent
-from app.database.session import SessionLocal
 
 
 class StripePaymentStore(Protocol):
@@ -36,7 +35,11 @@ class StripePaymentRepository:
         self._session = session
 
     def _scope(self) -> AbstractAsyncContextManager[AsyncSession]:
-        return _reuse(self._session) if self._session is not None else SessionLocal()
+        if self._session is not None:
+            return _reuse(self._session)
+        from app.database.session import SessionLocal
+
+        return SessionLocal()
 
     async def record_checkout_session(self, session_data: dict[str, Any]) -> None:
         session_id = _text(session_data.get("id"))

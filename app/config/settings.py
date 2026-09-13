@@ -307,7 +307,7 @@ def _resolve_settings_class(env: str) -> type[Settings]:
 
 
 @lru_cache
-def get_settings() -> Settings:
+def _environment_settings() -> Settings:
     """Return the Settings instance for the active environment.
 
     - Reads ``APP_ENV`` from the environment to select the correct subclass.
@@ -320,3 +320,15 @@ def get_settings() -> Settings:
     raw_env = os.environ.get("APP_ENV", "development")
     settings_cls = _resolve_settings_class(raw_env)
     return settings_cls()
+
+
+def get_settings() -> Settings:
+    """Use explicitly composed runtime settings, or cached server defaults."""
+    from app.runtime.context import current_runtime
+
+    runtime = current_runtime()
+    return runtime.settings if runtime is not None else _environment_settings()
+
+
+# Preserve the public cache invalidation hook used by server tests and scripts.
+setattr(get_settings, "cache_clear", _environment_settings.cache_clear)

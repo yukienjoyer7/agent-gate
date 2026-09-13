@@ -47,7 +47,7 @@ async def run_with_timeout(run: RunSession) -> None:
     except TimeoutError:
         logger.warning("run timed out after %ss: %s", timeout, run.run_id)
         run.status = RunStatus.ERROR
-        run.events.put_nowait(
+        run.publish(
             {
                 "type": "error",
                 "data": {"run_id": run.run_id, "message": f"run timed out after {timeout}s"},

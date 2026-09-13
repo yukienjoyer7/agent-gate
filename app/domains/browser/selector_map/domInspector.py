@@ -5,9 +5,12 @@ Resolve semantic browser elements to DOM nodes and collect execution metadata.
 This module does not build selector maps or execute actions.
 """
 
-from typing import Any
+from __future__ import annotations
 
-from playwright.async_api import Page
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 
 async def build_execution_metadata(
@@ -35,8 +38,7 @@ async def inspect_element(
     if locator is None:
         return None
 
-    dom = await locator.evaluate(
-        """
+    dom = await locator.evaluate("""
 (node)=>({
     tag: node.tagName.toLowerCase(),
     id: node.id || null,
@@ -57,8 +59,7 @@ async def inspect_element(
     visible: typeof node.checkVisibility === "function" ? node.checkVisibility() : true,
     disabled: Boolean(node.disabled)
 })
-"""
-    )
+""")
 
     return {"semantic": semantic, "dom": dom}
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -131,6 +132,14 @@ class RunSession:
         self.replan_count: int = 0
         self.task: asyncio.Task[Any] | None = None
         self.created_at: datetime = datetime.now(UTC)
+        self.event_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+
+    def publish(self, event: dict[str, Any]) -> dict[str, Any]:
+        """One publication boundary, shared by persistence and the queue consumer."""
+        if self.event_handler is not None:
+            event = self.event_handler(event)
+        self.events.put_nowait(event)
+        return event
 
     def step(self, index: int) -> StepState | None:
         return next((step for step in self.steps if step.index == index), None)

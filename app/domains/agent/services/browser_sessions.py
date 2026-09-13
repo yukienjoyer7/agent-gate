@@ -13,12 +13,16 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from playwright.async_api import async_playwright
-
 from app.config.settings import get_settings
 from app.domains.browser.browser_profile import DEFAULT_EXTRA_HEADERS, user_agent
 
 logger = logging.getLogger(__name__)
+
+
+def async_playwright():
+    from playwright.async_api import async_playwright as create_playwright
+
+    return create_playwright()
 
 
 @dataclass
@@ -110,7 +114,7 @@ class BrowserSessionManager:
                     extra_http_headers=DEFAULT_EXTRA_HEADERS,
                 )
                 page = await context.new_page()
-            except Exception:
+            except BaseException:
                 if context is not None:
                     try:
                         await context.close()

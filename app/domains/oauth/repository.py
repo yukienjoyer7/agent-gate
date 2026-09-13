@@ -7,7 +7,6 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.oauth_token import OAuthToken
-from app.database.session import SessionLocal
 
 
 @dataclass
@@ -31,7 +30,11 @@ class OAuthTokenRepository:
         self._session = session
 
     def _scope(self) -> AbstractAsyncContextManager[AsyncSession]:
-        return _reuse(self._session) if self._session is not None else SessionLocal()
+        if self._session is not None:
+            return _reuse(self._session)
+        from app.database.session import SessionLocal
+
+        return SessionLocal()
 
     async def get(self, provider: str) -> StoredToken | None:
         async with self._scope() as session:

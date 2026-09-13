@@ -23,8 +23,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from playwright.async_api import async_playwright
-
 from app.config.settings import get_settings
 from app.domains.browser.browser_profile import DEFAULT_EXTRA_HEADERS, user_agent
 from app.domains.browser.selector_map.domInspector import build_execution_metadata
@@ -37,10 +35,20 @@ from app.domains.browser.snapshot.snapshotBuilder import (
 TOOL_NAME = "get_accessibility_tree"
 
 
+def async_playwright():
+    from playwright.async_api import async_playwright as create_playwright
+
+    return create_playwright()
+
+
 def _tool_definition() -> dict[str, Any]:
     """Build the tool schema; navigation defaults come from settings so an env
     override (BROWSER_WAIT_UNTIL / BROWSER_TIMEOUT_MS) reaches the model too."""
-    settings = get_settings()
+    # Schema defaults are informational. Do not validate server environment
+    # configuration merely by importing a planner tool.
+    from app.config.settings import Settings
+
+    settings = Settings.model_construct()
     return {
         "type": "function",
         "function": {

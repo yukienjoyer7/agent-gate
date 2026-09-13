@@ -8,6 +8,7 @@ import httpx
 
 from app.config.settings import get_settings
 from app.domains.oauth.repository import OAuthTokenRepository, StoredToken
+from app.runtime.context import TokenStore, current_runtime
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ def _config(provider: str) -> ProviderConfig:
         return ProviderConfig(
             authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
             token_url="https://oauth2.googleapis.com/token",
-    scope="https://www.googleapis.com/auth/calendar",
+            scope="https://www.googleapis.com/auth/calendar",
             client_id=settings.GOOGLE_OAUTH_CLIENT_ID,
             client_secret=settings.GOOGLE_OAUTH_CLIENT_SECRET,
             redirect_uri=settings.GOOGLE_CALENDAR_OAUTH_REDIRECT_URI,
@@ -83,7 +84,7 @@ async def exchange_code(
     provider: str,
     code: str,
     state: str,
-    repo: OAuthTokenRepository | None = None,
+    repo: TokenStore | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> StoredToken:
     if _pending_states.pop(state, None) != provider:
@@ -100,10 +101,10 @@ async def exchange_code(
 
 async def get_access_token(
     provider: str,
-    repo: OAuthTokenRepository | None = None,
+    repo: TokenStore | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> str | None:
-    repo = repo or OAuthTokenRepository()
+    repo = repo or _token_repository()
     token = await repo.get(provider)
     if token is None:
         return _fallback_token(provider)
@@ -115,7 +116,7 @@ async def get_access_token(
 async def _refresh(
     provider: str,
     token: StoredToken,
-    repo: OAuthTokenRepository | None,
+    repo: TokenStore | None,
     client: httpx.AsyncClient | None,
 ) -> StoredToken:
     if not token.refresh_token:
@@ -133,7 +134,7 @@ async def _refresh(
 async def _request_token(
     provider: str,
     grant_params: dict[str, str],
-    repo: OAuthTokenRepository | None,
+    repo: TokenStore | None,
     client: httpx.AsyncClient | None,
     fallback_refresh_token: str | None = None,
     fallback_scope: str | None = None,
@@ -165,13 +166,18 @@ async def _request_token(
     if payload.get("expires_in"):
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(payload["expires_in"]))
 
-    return await (repo or OAuthTokenRepository()).save(
+    return await (repo or _token_repository()).save(
         provider=provider,
         access_token=payload["access_token"],
         refresh_token=payload.get("refresh_token", fallback_refresh_token),
         expires_at=expires_at,
         scope=payload.get("scope", fallback_scope or config.scope),
     )
+
+
+def _token_repository() -> TokenStore:
+    runtime = current_runtime()
+    return runtime.tokens if runtime is not None else OAuthTokenRepository()
 
 
 def _fallback_token(provider: str) -> str | None:

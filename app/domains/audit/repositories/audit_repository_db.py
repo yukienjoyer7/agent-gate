@@ -34,7 +34,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.schemas import ActionRequest, AuditEvent, DecisionResponse, ExecutionResult
 from app.database.models.audit_log import AuditLog
-from app.database.session import SessionLocal
+
+
+def SessionLocal() -> AsyncSession:
+    """Resolve the server session factory only when a default session is needed."""
+    from app.database.session import SessionLocal as create_session
+
+    return create_session()
 
 
 @asynccontextmanager
@@ -58,7 +64,9 @@ class AuditRepositoryDB:
         self._session = session
 
     def _scope(self) -> AbstractAsyncContextManager[AsyncSession]:
-        return _reuse(self._session) if self._session is not None else SessionLocal()
+        if self._session is not None:
+            return _reuse(self._session)
+        return SessionLocal()
 
     async def write(
         self,

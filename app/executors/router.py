@@ -26,8 +26,8 @@ def decision_to_execution_status(decision: Decision) -> ExecutionStatus | None:
 
 
 class ExecutionRouter:
-    def __init__(self) -> None:
-        self.api = APIExecutor()
+    def __init__(self, api: APIExecutor | None = None) -> None:
+        self.api = api if api is not None else APIExecutor()
         self.browser = BrowserExecutor()
 
     async def route(

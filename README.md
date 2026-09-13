@@ -4,15 +4,30 @@ Guarded agent execution platform (MVP). Agents propose actions; a guardrail laye
 scores risk and routes them to auto-execution, human approval, or rejection — with
 full audit trails and benchmarking of raw vs. guarded execution.
 
-Architecture: **Modular Monolith** on **FastAPI / Python 3.11 / PostgreSQL**.
+Architecture: **Modular Monolith**, with a local Python CLI and an optional
+FastAPI/PostgreSQL server adapter.
 See the [Technical Foundation Document](./AgentGate%20Technical%20Foundation%20Document.md) for the full Sprint 0 design.
 
-## Quickstart
+## Local CLI
+
+```bash
+pipx install .
+agentgate init
+agentgate doctor
+agentgate run "Read README.md"
+agentgate history
+```
+
+No application server, Docker, PostgreSQL, or Redis is required for the CLI.
+See the [local CLI guide](./docs/cli.md) for credentials, optional browser and
+Stripe extras, approvals, JSON output, and supported commands.
+
+## Server development quickstart
 
 ```bash
 # 1. Python env + deps
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,server,browser,stripe]"
 
 # 2. Config
 cp .env.example .env        # fill in values as needed
@@ -135,8 +150,8 @@ model name — it always uses the same provider/type as the planner.
 
 ### Getting started
 
-1. Fork/clone the repo and follow [Quickstart](#quickstart) to set up your environment.
-2. Install dev tooling: `pip install -e ".[dev]"`.
+1. Fork/clone the repo and follow [Server development quickstart](#server-development-quickstart).
+2. Install dev tooling: `pip install -e ".[dev,server,browser,stripe]"`.
 3. Create a branch off `main` — never commit directly to `main`.
 
 ### Branch & commit conventions

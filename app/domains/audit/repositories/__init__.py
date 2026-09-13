@@ -1,15 +1,19 @@
-from typing import Union
-
 from app.config.settings import get_settings
 from app.domains.audit.repositories.audit_repository import AuditRepository
-from app.domains.audit.repositories.audit_repository_db import AuditRepositoryDB
+from app.runtime.context import current_runtime
 
 __all__ = ["AuditRepository", "AuditRepositoryDB", "get_audit_repository"]
 
-AnyAuditRepository = Union[AuditRepository, AuditRepositoryDB]
+
+def __getattr__(name: str):
+    if name == "AuditRepositoryDB":
+        from app.domains.audit.repositories.audit_repository_db import AuditRepositoryDB
+
+        return AuditRepositoryDB
+    raise AttributeError(name)
 
 
-def get_audit_repository() -> AnyAuditRepository:
+def get_audit_repository():
     """
     Returns the configured audit repository, chosen via
     settings.AUDIT_BACKEND ("jsonl" | "postgres"). The settings default is
@@ -23,7 +27,12 @@ def get_audit_repository() -> AnyAuditRepository:
     so call sites only need to swap AuditRepository() -> get_audit_repository()
     and await the result; nothing else changes regardless of backend.
     """
+    runtime = current_runtime()
+    if runtime is not None:
+        return runtime.audit
     backend = get_settings().AUDIT_BACKEND
     if backend == "postgres":
+        from app.domains.audit.repositories.audit_repository_db import AuditRepositoryDB
+
         return AuditRepositoryDB()
     return AuditRepository()

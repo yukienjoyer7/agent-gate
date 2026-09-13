@@ -10,7 +10,8 @@ from app.executors.router import ExecutionRouter
 def test_api_executor_registers_telegram_connector() -> None:
     executor = APIExecutor()
 
-    assert isinstance(executor.connectors["telegram"], TelegramConnector)
+    assert "telegram" not in executor.connectors
+    assert isinstance(executor.connector_for("telegram"), TelegramConnector)
 
 
 def test_unknown_telegram_action_does_not_crash() -> None:

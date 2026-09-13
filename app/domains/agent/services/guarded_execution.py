@@ -4,6 +4,7 @@ from app.domains.audit.repositories import get_audit_repository
 from app.domains.guardrail.decision import adecide
 from app.executors import ExecutionRouter
 from app.tracing import LatencyTracker, TraceWriter
+from app.runtime.context import current_runtime
 
 
 async def run_guarded_action(
@@ -26,7 +27,9 @@ async def run_guarded_action(
     latency.stop("guardrail")
 
     latency.start("executor")
-    execution = await ExecutionRouter().route(request, decision)
+    runtime = current_runtime()
+    router = runtime.router if runtime is not None else ExecutionRouter()
+    execution = await router.route(request, decision)
     latency.stop("executor")
 
     latency.start("audit_write")
@@ -37,7 +40,7 @@ async def run_guarded_action(
     )
     latency.stop("audit_write")
 
-    (traces or TraceWriter()).write(
+    (traces or (runtime.traces if runtime is not None else TraceWriter())).write(
         ActionTrace(
             run_id=request.run_id,
             action_id=request.action_id,

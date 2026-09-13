@@ -22,6 +22,7 @@ from typing import Any
 import httpx
 
 from app.config.settings import get_settings
+from app.runtime.context import current_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,12 @@ async def post_chat(
 ) -> tuple[dict[str, Any], bool]:
     """POST a canonical chat-completions payload to the configured provider."""
     settings = get_settings()
+
+    runtime = current_runtime()
+    if runtime is not None and runtime.sanitize_messages is not None:
+        payload = {**payload, "messages": runtime.sanitize_messages(payload.get("messages") or [])}
+        if fallback_system_prompt is not None:
+            fallback_system_prompt = runtime.sanitize_messages(fallback_system_prompt)
 
     if settings.LLM_TYPE == "anthropic":
         return await _post_anthropic(payload, settings)

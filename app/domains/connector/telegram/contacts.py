@@ -13,7 +13,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.telegram_contact import TelegramContact
-from app.database.session import SessionLocal
 
 
 def normalize_display_name(value: str | None) -> str | None:
@@ -79,7 +78,11 @@ class TelegramContactRepository:
         self._session = session
 
     def _scope(self) -> AbstractAsyncContextManager[AsyncSession]:
-        return _reuse(self._session) if self._session is not None else SessionLocal()
+        if self._session is not None:
+            return _reuse(self._session)
+        from app.database.session import SessionLocal
+
+        return SessionLocal()
 
     async def upsert(
         self,

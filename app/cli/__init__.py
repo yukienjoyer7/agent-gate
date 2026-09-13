@@ -1,0 +1,1 @@
+"""AgentGate terminal adapter."""

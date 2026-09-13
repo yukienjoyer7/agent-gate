@@ -44,7 +44,7 @@ from app.core.schemas import (
     new_id,
 )
 from app.domains.agent.services.agent_planner import parse_next_steps
-from app.domains.agent.services.browser_prototype_agent import (
+from app.domains.agent.services.browser_adapter import (
     plan_step_to_browser_action,
     public_browser_actions,
     run_browser_prototype_agent,
@@ -102,7 +102,9 @@ async def run_agent_loop(run: RunSession) -> None:
         await close_browser_session(run.run_id)
 
     if run.status == RunStatus.RUNNING:
-        if _browser_goal_still_needs_interaction(run):
+        if run.execution_log and run.execution_log[-1].get("status") == "failed":
+            run.status = RunStatus.FAILED
+        elif _browser_goal_still_needs_interaction(run):
             _fail_incomplete_browser_goal(
                 run, "browser objective could not be completed before the run step limit"
             )
@@ -887,7 +889,7 @@ def _set_status(run: RunSession, step: StepState, status: StepStatus) -> None:
 
 
 def _emit(run: RunSession, event_type: str, data: dict[str, Any]) -> None:
-    run.events.put_nowait({"type": event_type, "data": data})
+    run.publish({"type": event_type, "data": data})
 
 
 def _decision_event(run: RunSession, step: StepState, decision: DecisionResponse) -> dict[str, Any]:
