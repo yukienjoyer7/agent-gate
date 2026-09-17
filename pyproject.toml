@@ -51,13 +51,23 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+"app.domains.guardrail._vendor.agentgate" = ["NOTICE.md"]
+"app.domains.guardrail._vendor.agentgate.policy" = ["packs/*.json"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["app/domains/guardrail/_vendor"]
 
 [tool.black]
 line-length = 100
 target-version = ["py311"]
+extend-exclude = 'app/domains/guardrail/_vendor/'
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[[tool.mypy.overrides]]
+module = "app.domains.guardrail._vendor.*"
+ignore_errors = true

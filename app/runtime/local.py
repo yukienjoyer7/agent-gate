@@ -214,6 +214,7 @@ class LocalRuntime:
                 STRIPE_PRICE_MAP=cfg.stripe_price_map,
                 LLM_TOOLS_ENABLED=cfg.browser_enabled,
                 ATOMIC_BROWSER_AUDIT=True,
+                GUARDRAIL_AUDIT_PATH=str(self.paths.data / "guardrail.jsonl"),
                 ALLOWED_TARGET_SYSTEMS=["local_file", "github", "gmail", "calendar", "stripe"]
                 + (["browser"] if cfg.browser_enabled else []),
             )
@@ -227,6 +228,11 @@ class LocalRuntime:
                     "LLM_MAX_TOKENS",
                     "GUARDRAIL_LLM_ENABLED",
                     "GUARDRAIL_MODEL",
+                    "GUARDRAIL_BACKEND",
+                    "OLLAMA_HOST",
+                    "AGENTGATE_LLM_DETECTOR_MODEL",
+                    "AGENTGATE_LLM_DETECTOR_TIMEOUT",
+                    "AGENTGATE_DETECTOR_ARCHITECTURE",
                     "AGENT_MAX_STEPS",
                     "AGENT_MAX_REPLAN",
                     "AGENT_WAIT_RESPONSE_TIMEOUT_SEC",

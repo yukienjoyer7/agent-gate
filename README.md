@@ -19,6 +19,9 @@ agentgate history
 ```
 
 No application server, Docker, PostgreSQL, or Redis is required for the CLI.
+Guarded runs use the embedded [NafisNaufal/agentgate](https://github.com/NafisNaufal/agentgate)
+engine and require Ollama with `qwen2.5:7b` by default. Run `ollama pull qwen2.5:7b`
+and start Ollama before guarded runs; `agentgate doctor` reports whether it is ready.
 See the [local CLI guide](./docs/cli.md) for credentials, optional browser and
 Stripe extras, approvals, JSON output, and supported commands.
 
@@ -89,6 +92,8 @@ until the Playwright executor is hardened.
   outbound guarded `telegram.send_message` connector.
 - [Stripe](./docs/integrations/stripe.md): approval-gated hosted checkout,
   refunds, payment status, and signed webhook reconciliation.
+- [Guardrail engine](./docs/integrations/guardrail.md): merged engine, detector
+  setup, policy mapping, pre-execution audit, and migration from the legacy judge.
 
 ## Interactive chat runs (reactive agent loop)
 
@@ -123,11 +128,16 @@ then `POST /chat/execute/{run_id}/respond` with
 
 ### Guardrail with a dedicated model
 
-The deterministic rules stay the first line of defence. Set
-`GUARDRAIL_LLM_ENABLED=true` (and optionally `GUARDRAIL_MODEL`) in `.env` to
-have a dedicated LLM judge review every non-BLOCK decision via tool-calling;
-a rule-based BLOCK can never be overridden. The loop, planner and replanner
-always use `LLM_MODEL` — only the guardrail uses its own model.
+`GUARDRAIL_BACKEND=agentgate` is the default. The merged engine runs six local
+Ollama detectors, applies the upstream policy packs, scores risk, and prepares
+redactions. Existing application restrictions still set a minimum verdict.
+`AGENTGATE_LLM_DETECTOR_MODEL` selects the detector model independently of the
+planner's `LLM_MODEL`. An unavailable or malformed detector response requires
+approval; failure to persist the evaluation prevents execution.
+
+For an explicit rollback, `GUARDRAIL_BACKEND=legacy` restores the previous rules
+and optional judge (`GUARDRAIL_LLM_ENABLED` / `GUARDRAIL_MODEL`). There is no
+automatic fallback to that backend. See the [integration guide](./docs/integrations/guardrail.md).
 
 ### LLM provider config
 
@@ -143,8 +153,8 @@ The LLM provider is configured entirely via env (see `.env.example`):
 
 The shared client (`app.llm.services.client`) adapts the canonical payload/
 response between the two dialects automatically (system message, tools,
-tool-call round-trips). `GUARDRAIL_MODEL` only overrides the guardrail's
-model name — it always uses the same provider/type as the planner.
+tool-call round-trips). These settings configure the planner. The default
+guardrail uses its separate Ollama endpoint and detector model.
 
 ## Contributing
 

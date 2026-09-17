@@ -21,8 +21,13 @@ COPY pyproject.toml README.md ./
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Install every production extra from pyproject.toml. The API imports the
+# server stack at startup, browser execution requires Playwright, and Stripe
+# connectors are part of the application runtime. Keeping this tied to the
+# project metadata prevents the image from silently omitting new dependencies
+# such as filelock used by the embedded guardrail audit journal.
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir ".[server,browser,stripe]"
 
 
 # Runtime stage

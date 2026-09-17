@@ -91,6 +91,8 @@ class DecisionResponse(BaseModel):
     sanitized_payload: dict[str, Any] | None = None
     initial_decision: Decision | None = None
     approval_decision: str | None = None
+    guardrail_audit_id: str | None = None
+    evaluation_error: str | None = None
     next_step: str = "execute"
     latency_ms: int = 0
     created_at: datetime = Field(default_factory=utc_now)

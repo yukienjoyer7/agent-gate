@@ -231,6 +231,7 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
     pauses. Returns the (possibly approved) decision, or None when the run
     must stop."""
     settings = get_settings()
+    sanitized_for_review = False
     while True:
         _set_status(run, step, StepStatus.RUNNING)
         prepared_decision = await _prepare_telegram_recipient(run, step)
@@ -253,7 +254,7 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
         fields = detect_sensitive_fields(
             request.payload, step.answered, step.data.get("action_type")
         )
-        if not fields and decision.sanitized_payload:
+        if not fields and decision.sanitized_payload and not decision.guardrail_audit_id:
             fields = [
                 {"key": str(key), "label": str(key).replace("_", " ").title()}
                 for key in decision.sanitized_payload
@@ -281,6 +282,31 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
             _apply_user_input(step, response)
             # Re-evaluate with the filled payload before executing.
             continue
+
+        if decision.guardrail_audit_id and decision.sanitized_payload is not None:
+            # The embedded engine returns a complete redacted payload, not a
+            # list of missing fields. Evaluate that exact replacement before
+            # asking for approval, and never execute the original content.
+            replacement = decision.sanitized_payload
+            step.answered.update(
+                key for key, value in replacement.items() if value != request.payload.get(key)
+            )
+            step.data["payload"] = replacement
+            sanitized_for_review = True
+            continue
+
+        if sanitized_for_review and decision.decision == Decision.ALLOW:
+            decision = decision.model_copy(
+                update={
+                    "decision": Decision.NEED_APPROVAL,
+                    "reasons": [
+                        *decision.reasons,
+                        "Confirm the sanitized payload before execution",
+                    ],
+                    "next_step": "approval_queue",
+                }
+            )
+            step.decision = decision.model_dump(mode="json")
 
         if decision.decision == Decision.NEED_APPROVAL:
             step.status = StepStatus.WAITING_APPROVAL
@@ -323,7 +349,7 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
             # Ambiguous step (e.g. unclear target). Pause once and ask the user
             # for clarification; after that, treat it as user-approved.
             calendar_fields = _calendar_create_event_missing_fields(step)
-            if step.clarified:
+            if step.clarified and not decision.guardrail_audit_id:
                 decision = decision.model_copy(
                     update={
                         "decision": Decision.ALLOW,
@@ -377,6 +403,19 @@ async def _guardrail_step(run: RunSession, step: StepState) -> DecisionResponse 
                 continue
             step.data["user_clarification"] = text
             step.clarified = True
+            if decision.guardrail_audit_id:
+                # Clarification supplies intent; it cannot grant approval for
+                # a risky operation. Run the embedded engine again with it.
+                if text:
+                    step.data["confidence"] = 1.0
+                    if step.data.get("risk_hint") in settings.GUARDRAIL_ASK_USER_HINTS:
+                        step.data["risk_hint"] = "unknown"
+                    step.data["content_context"] = (
+                        str(step.data.get("content_context") or "")
+                        + "\nUser clarification: "
+                        + text
+                    )
+                continue
             decision = decision.model_copy(
                 update={
                     "decision": Decision.ALLOW,

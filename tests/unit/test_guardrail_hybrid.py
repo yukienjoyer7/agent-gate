@@ -10,7 +10,6 @@ from app.config.settings import get_settings
 from app.core.action_request import build_action_request
 from app.core.schemas import Decision, DecisionResponse
 from app.domains.guardrail.decision import adecide, decide
-from app.domains.guardrail.decision.simple import decide_rule
 
 
 def _request(**overrides) -> "object":
@@ -26,8 +25,7 @@ def _request(**overrides) -> "object":
     return build_action_request(proposal)
 
 
-def test_sync_decide_is_rules_only() -> None:
-    assert decide is decide_rule
+def test_sync_decide_uses_explicit_legacy_backend() -> None:
     assert decide(_request(risk_hint="destructive")).decision == Decision.BLOCK
 
 

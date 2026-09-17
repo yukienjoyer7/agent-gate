@@ -1,4 +1,6 @@
-"""Hybrid guardrail entry point: deterministic rules first, then an optional
+"""Guardrail backend dispatcher; defaults to the embedded AgentGate engine.
+
+The explicit legacy backend uses deterministic rules first, then an optional
 dedicated LLM judge for non-BLOCK cases.
 
 Design (as agreed in the conversation):
@@ -24,9 +26,13 @@ logger = logging.getLogger(__name__)
 
 
 async def adecide(action: ActionRequest) -> DecisionResponse:
-    """Async guardrail decision: rules, optionally refined by the LLM judge."""
-    rule = decide_rule(action)
+    """Evaluate with the configured backend; legacy requires explicit selection."""
     settings = get_settings()
+    if settings.GUARDRAIL_BACKEND == "agentgate":
+        from app.domains.guardrail.decision.agentgate import adecide_agentgate
+
+        return await adecide_agentgate(action)
+    rule = decide_rule(action)
     if not settings.GUARDRAIL_LLM_ENABLED or rule.decision == Decision.BLOCK:
         return rule
 

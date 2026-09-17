@@ -69,13 +69,15 @@ class ExecutionRouter:
                 "sanitized payload ready; awaiting confirmation before execution",
             )
 
+        if decision.decision == Decision.SANITIZE and decision.sanitized_payload is None:
+            return skipped(action, ExecutionStatus.BLOCKED, "sanitized payload is missing")
+
         # Execution is permitted. For SANITIZE the payload must be the
         # sanitized one — the original unsafe payload is never executed.
-        if (
-            use_sanitized
-            and decision.decision == Decision.SANITIZE
-            and decision.sanitized_payload is not None
-        ):
+        should_substitute_sanitized = (
+            use_sanitized and decision.decision == Decision.SANITIZE
+        ) or decision.guardrail_audit_id is not None
+        if should_substitute_sanitized and decision.sanitized_payload is not None:
             action = action.model_copy(update={"payload": decision.sanitized_payload})
 
         if action.target_system == "browser" or action.action_type.startswith("BROWSER_"):
