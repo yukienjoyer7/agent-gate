@@ -1,0 +1,118 @@
+{
+  "name": "global_safety_policy",
+  "description": "Cross-domain safety rules applied to every action.",
+  "rules": [
+    {
+      "id": "global.prompt_injection",
+      "description": "Content tries to override instructions or exfiltrate data.",
+      "entity_kinds_any": [
+        "PROMPT_INJECTION"
+      ],
+      "decision": "BLOCK",
+      "risk_floor": "HIGH",
+      "reason": "Possible prompt injection detected; the proposed action is blocked"
+    },
+    {
+      "id": "global.destructive_action",
+      "description": "Any detected destructive action, whatever the planner claims about rollback.",
+      "risk_hints_any": [
+        "destructive_action"
+      ],
+      "decision": "NEED_APPROVAL",
+      "risk_floor": "MEDIUM",
+      "reason": "Destructive action requires human approval"
+    },
+    {
+      "id": "global.destructive_no_rollback",
+      "description": "Destructive action that cannot be undone.",
+      "risk_hints_any": [
+        "destructive_action"
+      ],
+      "requires_no_rollback": true,
+      "decision": "NEED_APPROVAL",
+      "risk_floor": "HIGH",
+      "reason": "Irreversible destructive action requires human approval"
+    },
+    {
+      "id": "global.low_confidence_high_impact",
+      "description": "Planner is unsure about an externally-impactful action.",
+      "action_types": [
+        "API_CALL",
+        "BROWSER_SUBMIT",
+        "BROWSER_CLICK"
+      ],
+      "min_confidence": 0.5,
+      "decision": "NEED_APPROVAL",
+      "risk_floor": "MEDIUM",
+      "reason": "Low planner confidence on an impactful action; routing to approval"
+    },
+    {
+      "id": "global.credential_request",
+      "description": "Message asks a user for credentials (phishing).",
+      "entity_kinds_any": [
+        "CREDENTIAL_REQUEST"
+      ],
+      "decision": "BLOCK",
+      "risk_floor": "CRITICAL",
+      "reason": "Action requests credentials from a user (phishing pattern); blocked"
+    },
+    {
+      "id": "global.bulk_pii_egress",
+      "description": "Bulk customer-data export paired with an external destination.",
+      "entity_kinds_any": [
+        "EMAIL",
+        "PHONE",
+        "CREDIT_CARD",
+        "BOOKING_REF"
+      ],
+      "tags_any": [
+        "external_send"
+      ],
+      "risk_hints_any": [
+        "bulk_action"
+      ],
+      "decision": "BLOCK",
+      "risk_floor": "CRITICAL",
+      "reason": "Bulk export of customer data to an external destination is blocked regardless of individual entity severity"
+    },
+    {
+      "id": "global.pii_egress",
+      "description": "PII leaving through an external action must be sanitized.",
+      "entity_kinds_any": [
+        "EMAIL",
+        "PHONE",
+        "CREDIT_CARD",
+        "BOOKING_REF"
+      ],
+      "risk_hints_any": [
+        "external_send"
+      ],
+      "decision": "SANITIZE",
+      "risk_floor": "MEDIUM",
+      "reason": "PII in an external action must be redacted before execution"
+    },
+    {
+      "id": "global.browser_submit",
+      "description": "Browser form submission is an external side effect.",
+      "action_types": [
+        "BROWSER_SUBMIT"
+      ],
+      "decision": "NEED_APPROVAL",
+      "risk_floor": "HIGH",
+      "reason": "Browser form submission requires human approval"
+    },
+    {
+      "id": "global.submit_via_click",
+      "description": "A submit-capable element must not bypass submit policy as a click.",
+      "action_types": [
+        "BROWSER_CLICK"
+      ],
+      "risk_hints_any": [
+        "form_submit"
+      ],
+      "decision": "NEED_APPROVAL",
+      "risk_floor": "HIGH",
+      "reason": "Submit-capable browser controls require the guarded submit path"
+    }
+  ]
+}

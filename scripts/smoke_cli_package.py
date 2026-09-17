@@ -18,12 +18,54 @@ from pathlib import Path
 
 
 class LLMStub(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self._json({"models": [{"name": "stub"}]})
+
+    def _json(self, value: dict) -> None:
+        body = json.dumps(value).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self) -> None:
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert "package-smoke-secret" not in json.dumps(
             request
         ), "A credential leaked into LLM context"
         system = request["messages"][0]["content"]
+        if self.path == "/api/chat":
+            if "Personally Identifiable Information" in system:
+                verdict = {"has_pii": False}
+            elif "secret/credential classifier" in system:
+                verdict = {"has_secrets": False}
+            elif "source-code classifier" in system:
+                verdict = {
+                    "has_code": False,
+                    "has_codename": False,
+                    "language": "",
+                    "confidence": 1.0,
+                }
+            elif "payment/phishing classifier" in system:
+                verdict = {
+                    "has_payment": False,
+                    "has_credential_request": False,
+                    "has_urgency": False,
+                    "confidence": 1.0,
+                }
+            elif "action-intent classifier" in system:
+                verdict = {
+                    "is_bulk": False,
+                    "estimated_count": 0,
+                    "is_destructive": False,
+                    "is_external_send": False,
+                    "confidence": 1.0,
+                }
+            else:
+                verdict = {"label": "benign", "confidence": 1.0}
+            self._json({"message": {"content": json.dumps(verdict)}})
+            return
         if "reactive replanner" in system:
             content = {"done": True, "next_steps": [], "explanation": "File read completed"}
         else:
@@ -72,6 +114,11 @@ def smoke() -> None:
                 "LLM_API_KEY": "package-smoke-secret",
                 "LLM_URL": f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
                 "LLM_MODEL": "stub",
+                "LLM_TYPE": "openai",
+                "GUARDRAIL_BACKEND": "agentgate",
+                "OLLAMA_HOST": f"http://127.0.0.1:{server.server_port}",
+                "AGENTGATE_LLM_DETECTOR_MODEL": "stub",
+                "AGENTGATE_DETECTOR_ARCHITECTURE": "six",
                 "DATABASE_URL": "not-a-server-database",
                 "GUARDRAIL_BLOCK_HINTS": "[]",
                 "GUARDRAIL_NEED_APPROVAL_HINTS": "[]",
@@ -85,6 +132,7 @@ def smoke() -> None:
                     env=environment,
                     capture_output=True,
                     text=True,
+                    check=False,
                     timeout=20,
                 )
                 assert result.returncode == expected, result.stderr + result.stdout
@@ -97,6 +145,7 @@ def smoke() -> None:
             )
             checks = json.loads(command("doctor", "--json"))
             assert checks["storage"] == "ok"
+            assert checks["guardrail"] == "ready (stub)"
             events = [
                 json.loads(line)
                 for line in command(
@@ -108,6 +157,13 @@ def smoke() -> None:
             assert json.loads(command("history", "--json"))[0]["run_id"] == run_id
             record = json.loads(command("show", run_id, "--json"))
             assert record["audit"][0]["execution_status"] == "SUCCESS"
+            evaluation = json.loads(
+                (root / "data" / "guardrail.jsonl").read_text(encoding="utf-8").splitlines()[0]
+            )
+            assert evaluation["decision"]["decision"] == "ALLOW"
+            assert (
+                evaluation["audit_id"] == record["audit"][0]["decision_json"]["guardrail_audit_id"]
+            )
             assert record["steps"][0]["execution"]["data"]["content_preview"] == "hello [REDACTED]"
     finally:
         server.shutdown()

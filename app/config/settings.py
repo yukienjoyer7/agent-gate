@@ -150,12 +150,21 @@ class Settings(BaseSettings):
     # ``invalid_request_error: property 'plugins' is unsupported``.
     LLM_PLUGINS: Annotated[list[str], NoDecode] = []
 
-    # Guardrail (dedicated LLM model)
+    # Embedded NafisNaufal/agentgate engine. Legacy is an explicit rollback
+    # option; detector failures never silently switch to it.
+    GUARDRAIL_BACKEND: Literal["agentgate", "legacy"] = "agentgate"
+    OLLAMA_HOST: str = "http://localhost:11434"
+    AGENTGATE_LLM_DETECTOR_MODEL: str = "qwen2.5:7b"
+    AGENTGATE_LLM_DETECTOR_TIMEOUT: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    AGENTGATE_DETECTOR_ARCHITECTURE: Literal["six", "unified"] = "six"
+    GUARDRAIL_AUDIT_PATH: str = "artifacts/audit/guardrail.jsonl"
+
+    # Legacy guardrail (dedicated LLM model)
     # When enabled, the guardrail runs a second-opinion LLM review on top of
     # the deterministic rule engine for every non-BLOCK decision. A rule-based
     # BLOCK is always final. Defaults to OFF so behaviour is unchanged unless
     # explicitly opted in (the rules are the safe fallback either way).
-    GUARDRAIL_LLM_ENABLED: bool = False
+    GUARDRAIL_LLM_ENABLED: bool = True
     # Model for the guardrail judge; empty -> falls back to LLM_MODEL.
     GUARDRAIL_MODEL: str = ""
     # Which risk_hints the deterministic rule engine treats as BLOCK vs

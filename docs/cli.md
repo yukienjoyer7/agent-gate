@@ -35,12 +35,29 @@ agentgate init --non-interactive --workspace /absolute/path/to/project --credent
 Supply `LLM_API_KEY` securely through your calling environment. There are no
 secret-valued command-line flags and no implicit repository `.env` loading.
 
+The default guardrail requires Ollama and a detector model:
+
+```bash
+ollama pull qwen2.5:7b
+# In the shell running Ollama:
+OLLAMA_NUM_PARALLEL=6 ollama serve
+agentgate doctor
+```
+
+If Ollama already runs as a service, configure its parallelism in that service.
+On PowerShell, use `$env:OLLAMA_NUM_PARALLEL = "6"` before `ollama serve`.
+Supported shell overrides are `OLLAMA_HOST`, `AGENTGATE_LLM_DETECTOR_MODEL`,
+`AGENTGATE_LLM_DETECTOR_TIMEOUT`, and `AGENTGATE_DETECTOR_ARCHITECTURE` (`six` or
+experimental `unified`). These are independent of the planner configuration.
+`GUARDRAIL_BACKEND=legacy` explicitly restores the earlier guardrail.
+See [guardrail integration](integrations/guardrail.md) for behavior and audit details.
+
 ## Commands and interaction
 
 | Command | Purpose |
 | --- | --- |
 | `agentgate init` | Guided setup and local schema initialization |
-| `agentgate doctor` | Safe credential-presence, workspace, storage, browser checks |
+| `agentgate doctor` | Credential-presence, workspace, storage, browser, and detector readiness checks |
 | `agentgate connect llm` | Store an LLM key through hidden input |
 | `agentgate connect github` | Store a user-supplied GitHub token |
 | `agentgate connect gmail` | Google Desktop OAuth for Gmail read access |
@@ -98,6 +115,10 @@ use standard per-user locations. Override `AGENTGATE_CONFIG_DIR` and
 
 SQLite stores sanitized history, safe audit/traces, OAuth metadata, payment status
 with checked-at timestamps, and execution intents. Tokens/keys live outside SQLite.
+The embedded engine additionally appends each evaluation to `guardrail.jsonl`
+in the private data directory before returning a verdict. Final action audits
+in SQLite reference the evaluation's `guardrail_audit_id`. Redacted content is
+re-evaluated and shown for approval; it is not treated as missing secret input.
 Audit is append-only through SQLite triggers, not tamper-proof against the owner.
 Do not put credentials in prompts. Masking covers known credentials and recognized
 secret fields/formats, not every arbitrary string that a user might consider secret.

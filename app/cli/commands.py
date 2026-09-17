@@ -20,6 +20,7 @@ from app.credentials.local import (
 )
 from app.credentials.oauth import connect_google, disconnect_google
 from app.domains.guardrail.sensitive import is_sensitive_key
+from app.domains.guardrail.services.diagnostics import detector_status
 from app.runtime.config import LocalConfig, LocalPaths, load_config, save_config
 from app.runtime.local import LocalRuntime
 from app.storage.local.database import LocalDatabase
@@ -90,6 +91,7 @@ async def diagnose(config: LocalConfig, paths: LocalPaths, console: Console) -> 
         "workspace": Path(config.workspace).is_dir(),
         "credential_store": config.credential_store,
     }
+    guardrail_ok, checks["guardrail"] = await detector_status()
     store = secret_store(config.credential_store, paths.data)
     try:
         checks["credentials"] = {
@@ -138,6 +140,7 @@ async def diagnose(config: LocalConfig, paths: LocalPaths, console: Console) -> 
     return (
         0
         if browser_ok
+        and guardrail_ok
         and checks["workspace"]
         and checks["storage"] == "ok"
         and checks["credentials"].get("llm")

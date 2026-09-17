@@ -1,0 +1,43 @@
+{
+  "name": "booking_messaging_policy",
+  "description": "Booking messaging policy: external customer send, payment content, cancellation, submit, customer PII.",
+  "rules": [
+    {
+      "id": "booking.external_payment_send",
+      "description": "Sending payment-related content to a booking customer.",
+      "domains": ["booking_style"],
+      "tags_any": ["payment_related"],
+      "decision": "NEED_APPROVAL",
+      "risk_floor": "HIGH",
+      "reason": "Payment confirmation message to an external customer requires human approval"
+    },
+    {
+      "id": "booking.submit_action",
+      "description": "Submitting a form / clicking send in a booking dashboard.",
+      "domains": ["booking_style"],
+      "action_types": ["BROWSER_SUBMIT"],
+      "decision": "NEED_APPROVAL",
+      "risk_floor": "HIGH",
+      "reason": "Browser submit/send in a booking flow is an external, hard-to-undo action"
+    },
+    {
+      "id": "booking.customer_pii_external",
+      "description": "Customer PII headed to an external send.",
+      "domains": ["booking_style"],
+      "entity_kinds_any": ["EMAIL", "PHONE", "CREDIT_CARD", "BOOKING_REF"],
+      "risk_hints_any": ["external_send"],
+      "decision": "SANITIZE",
+      "risk_floor": "MEDIUM",
+      "reason": "Customer PII in an external message should be redacted before continuing"
+    },
+    {
+      "id": "booking.cancel_booking",
+      "description": "Cancelling a booking is destructive for the customer.",
+      "domains": ["booking_style"],
+      "risk_hints_any": ["destructive_action"],
+      "decision": "NEED_APPROVAL",
+      "risk_floor": "HIGH",
+      "reason": "Cancelling a booking is a destructive customer-facing action"
+    }
+  ]
+}

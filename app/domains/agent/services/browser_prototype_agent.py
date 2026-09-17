@@ -19,11 +19,11 @@ from app.core.schemas import (
     ExecutionResult,
     ExecutionStatus,
 )
-from app.domains.agent.services.browser_sessions import browser_session_manager
 from app.domains.agent.services.browser_adapter import (
-    plan_step_to_browser_action as plan_step_to_browser_action,
-    public_browser_actions,
+    plan_step_to_browser_action as plan_step_to_browser_action,  # noqa: PLC0414 - compatibility export
 )
+from app.domains.agent.services.browser_adapter import public_browser_actions
+from app.domains.agent.services.browser_sessions import browser_session_manager
 from app.domains.audit.repositories import get_audit_repository
 from app.domains.browser.browser_profile import DEFAULT_EXTRA_HEADERS, user_agent
 from app.domains.browser.executor import execute_action
@@ -142,6 +142,15 @@ async def run_browser_prototype_agent(
     if decision.decision != Decision.ALLOW:
         execution = _skipped_execution(request, decision)
         return await _write_audit(request, decision, execution, total_started)
+
+    if decision.sanitized_payload is not None:
+        # A compound preview can contain fill/select values. Use the exact
+        # redacted action list that the guardrail evaluated; never recover the
+        # original values after an ALLOW that still carried a safe replacement.
+        request = request.model_copy(update={"payload": decision.sanitized_payload})
+        sanitized_actions = request.payload.get("actions")
+        if isinstance(sanitized_actions, list):
+            browser_actions = [dict(item) for item in sanitized_actions if isinstance(item, dict)]
 
     try:
         execution = await _execute_with_browser(

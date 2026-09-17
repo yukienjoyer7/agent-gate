@@ -37,12 +37,21 @@ services:
     # Override DATABASE_URL for Docker networking (service name, not localhost)
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://agentgate:agentgate@postgres:5432/agentgate}
+      # Ollama runs on the developer host when using Docker Desktop.
+      GUARDRAIL_BACKEND: ${GUARDRAIL_BACKEND:-agentgate}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      AGENTGATE_LLM_DETECTOR_MODEL: ${AGENTGATE_LLM_DETECTOR_MODEL:-qwen2.5:7b}
+      AGENTGATE_LLM_DETECTOR_TIMEOUT: ${AGENTGATE_LLM_DETECTOR_TIMEOUT:-30}
+      AGENTGATE_DETECTOR_ARCHITECTURE: ${AGENTGATE_DETECTOR_ARCHITECTURE:-six}
 
     ports:
       - "8000:8000"
 
     volumes:
       - .:/app
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     depends_on:
       postgres:
