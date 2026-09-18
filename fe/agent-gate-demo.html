@@ -798,62 +798,57 @@ function escapeHtml(s) {
 
 /* ── integrations ─────────────────────────────────────────────── */
 const PROVIDERS = [
-  { key: "github",   name: "GitHub",          icon: "🐙", desc: "Repo & Issues",      path: "/api/v1/oauth/github/authorize", type: "oauth" },
-  { key: "gmail",    name: "Gmail",           icon: "📧", desc: "Email API",          path: "/api/v1/oauth/gmail/authorize",  type: "oauth" },
-  { key: "calendar", name: "Google Calendar", icon: "📅", desc: "Jadwal & Acara",     path: "/api/v1/oauth/calendar/authorize", type: "oauth" },
-  { key: "telegram", name: "Telegram Bot",    icon: "✈️", desc: "Webhook & Chat",     path: "/api/v1/telegram/webhook",       type: "token" },
-  { key: "stripe",   name: "Stripe",          icon: "💳", desc: "Payment Gateway",    path: "/api/v1/stripe/webhook",         type: "token" },
-  { key: "slack",    name: "Slack",           icon: "💬", desc: "Workspace Bot",      path: "/api/v1/oauth/slack/authorize",  type: "oauth" },
-  { key: "notion",   name: "Notion",          icon: "📝", desc: "Workspace & Dokumen", path: "/api/v1/oauth/notion/authorize", type: "oauth" },
-  { key: "discord",  name: "Discord",         icon: "🎮", desc: "Server Bot",         path: "/api/v1/oauth/discord/authorize", type: "oauth" },
-  { key: "drive",    name: "Google Drive",    icon: "📁", desc: "Cloud Storage",      path: "/api/v1/oauth/drive/authorize",  type: "oauth" },
-  { key: "spotify",  name: "Spotify",         icon: "🎵", desc: "Music API",          path: "/api/v1/oauth/spotify/authorize", type: "oauth" },
-  { key: "linear",   name: "Linear",          icon: "📐", desc: "Issue Tracker",      path: "/api/v1/oauth/linear/authorize", type: "oauth" },
-  { key: "xendit",   name: "Xendit",          icon: "💸", desc: "Indonesian PG",      path: "/api/v1/oauth/xendit/authorize", type: "token" },
+  { key: "github",   name: "GitHub",          icon: "🐙", type: "oauth",   path: "/api/v1/oauth/github/authorize", desc: "OAuth Connector" },
+  { key: "gmail",    name: "Gmail",           icon: "📧", type: "oauth",   path: "/api/v1/oauth/gmail/authorize",  desc: "OAuth Connector" },
+  { key: "calendar", name: "Google Calendar", icon: "📅", type: "oauth",   path: "/api/v1/oauth/calendar/authorize", desc: "OAuth Connector" },
+  { key: "telegram", name: "Telegram Bot",    icon: "✈️", type: "service", desc: "Bot API & Webhook", info: "Bot token / webhook di backend" },
+  { key: "stripe",   name: "Stripe",          icon: "💳", type: "service", desc: "Payments & Refunds", info: "API Key / webhook di backend" },
 ];
-
-const localAuthStatus = {};
 
 function renderIntegrations(statusMap) {
   const el = $("integrations");
   el.innerHTML = "";
   for (const p of PROVIDERS) {
-    const st = statusMap[p.key] || {};
-    const connected = !!st.connected || !!localAuthStatus[p.key];
     const card = document.createElement("div");
     card.className = "integ-card";
-    card.innerHTML = `
-      <div class="integ-icon">${p.icon}</div>
-      <div class="integ-info">
-        <div class="integ-name">${escapeHtml(p.name)}</div>
-        <div class="integ-status ${connected ? "on" : "off"}">
-          <span class="dot ${connected ? "on" : "off"}"></span>
-          ${connected ? "Terhubung" : "Belum terhubung"}
+    if (p.type === "oauth") {
+      const st = statusMap[p.key] || {};
+      const connected = !!st.connected;
+      card.innerHTML = `
+        <div class="integ-icon">${p.icon}</div>
+        <div class="integ-info">
+          <div class="integ-name">${escapeHtml(p.name)}</div>
+          <div class="integ-status ${connected ? "on" : "off"}">
+            <span class="dot ${connected ? "on" : "off"}"></span>
+            ${connected ? "Terhubung" : "Belum terhubung"}
+          </div>
         </div>
-      </div>
-      <button class="btn-connect ${connected ? "connected" : ""}"
-              data-provider="${escapeHtml(p.key)}"
-              data-path="${escapeHtml(p.path)}"
-              data-type="${escapeHtml(p.type || "oauth")}">${connected ? "✓ Terhubung" : "Hubungkan"}</button>`;
+        <button class="btn-connect ${connected ? "connected" : ""}"
+                onclick="openAuth('${p.path}')">${connected ? "✓" : "Hubungkan"}</button>`;
+    } else {
+      // Native backend service connectors
+      card.innerHTML = `
+        <div class="integ-icon">${p.icon}</div>
+        <div class="integ-info">
+          <div class="integ-name">${escapeHtml(p.name)}</div>
+          <div class="integ-status on">
+            <span class="dot on"></span>
+            ${escapeHtml(p.desc)}
+          </div>
+        </div>
+        <button class="btn-connect connected"
+                title="${escapeHtml(p.info)}"
+                onclick="flash('${escapeHtml(p.name)}: ${escapeHtml(p.info)}')">Aktif</button>`;
+    }
     el.appendChild(card);
   }
-
-  el.querySelectorAll(".btn-connect").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const key = btn.getAttribute("data-provider");
-      const path = btn.getAttribute("data-path");
-      const type = btn.getAttribute("data-type");
-      openAuth(path, key, type);
-    });
-  });
 }
 
 async function fetchIntegrationStatus() {
   try {
     const resp = await fetch(baseUrlEl.value.trim().replace(/\/+$/, "") + "/api/v1/oauth/status");
     if (resp.ok) {
-      const data = await resp.json();
-      renderIntegrations(data);
+      renderIntegrations(await resp.json());
     } else {
       renderIntegrations({});
     }
@@ -862,29 +857,9 @@ async function fetchIntegrationStatus() {
   }
 }
 
-function openAuth(path, key, type) {
+function openAuth(path) {
   const base = baseUrlEl.value.trim().replace(/\/+$/, "");
-  if (["github", "gmail", "calendar"].includes(key)) {
-    window.open(base + path, "_blank", "noopener");
-    return;
-  }
-  if (type === "token") {
-    const token = prompt(`Masukkan API Key / Bot Token untuk ${key.toUpperCase()}:\n(atau setel di file .env backend)`, "");
-    if (token !== null && token.trim() !== "") {
-      localAuthStatus[key] = true;
-      flash(`Token ${key} berhasil disimpan.`);
-      fetchIntegrationStatus();
-    }
-    return;
-  }
-  // Other OAuth providers
-  const proceed = confirm(`Membuka alur OAuth untuk ${key.toUpperCase()}.\nLanjutkan?`);
-  if (proceed) {
-    window.open(base + path, "_blank", "noopener");
-    localAuthStatus[key] = true;
-    flash(`Autentikasi ${key} diinisialisasi.`);
-    setTimeout(fetchIntegrationStatus, 1000);
-  }
+  window.open(base + path, "_blank", "noopener");
 }
 /* ── init ─────────────────────────────────────────────────────── */
 const chipsEl = $("chips");
