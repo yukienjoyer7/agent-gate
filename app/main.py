@@ -1,9 +1,11 @@
+from contextlib import asynccontextmanager
 import asyncio
 import logging
 import sys
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from app.api.v1 import actions, approvals, audits, benchmark, chat, health, oauth, runs, stripe, telegram
 from app.config.logging import configure_logging
@@ -15,14 +17,49 @@ if sys.platform.startswith("win"):
 logger = logging.getLogger(__name__)
 
 
+class RootResponse(BaseModel):
+    service: str = Field(default="agentgate", description="Service identifier", examples=["agentgate"])
+    env: str = Field(..., description="Active runtime environment", examples=["development"])
+    version: str = Field(default="0.1.0", description="Application semantic version", examples=["0.1.0"])
+
+
+TAGS_METADATA = [
+    {"name": "health", "description": "Service operational and health check endpoints."},
+    {"name": "runs", "description": "Agent execution runs and historical action queries."},
+    {"name": "actions", "description": "Guarded action proposal execution, browser prototyping, and action detail inspection."},
+    {"name": "audits", "description": "Audit event log queries and latest event retrieval."},
+    {"name": "approvals", "description": "Human-in-the-loop pending approval queue."},
+    {"name": "benchmark", "description": "Execution latency and performance metrics."},
+    {"name": "chat", "description": "Reactive agent chat planning, SSE streaming execution, state inspection, and step interaction."},
+    {"name": "oauth", "description": "OAuth 2.0 connection management, authorization redirects, and callbacks."},
+    {"name": "stripe", "description": "Stripe payment and checkout webhook event processing."},
+    {"name": "telegram", "description": "Telegram Bot webhook and inbound update processing."},
+    {"name": "system", "description": "System and service information."},
+]
+
+
 def create_app() -> FastAPI:
     configure_logging()
     settings = get_settings()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        logger.info(
+            "AgentGate starting",
+            extra={
+                "env": settings.APP_ENV,
+                "debug": settings.DEBUG,
+                "log_level": settings.LOG_LEVEL,
+            },
+        )
+        yield
+
     app = FastAPI(
         title="AgentGate",
         version="0.1.0",
-        description="Guarded agent execution platform (MVP)",
+        description="Guarded agent execution platform (MVP) — provides safety guardrails, execution routing, and durable audit logs.",
+        openapi_tags=TAGS_METADATA,
+        lifespan=lifespan,
     )
 
     # Allow browser-based demo clients (e.g. the fe/ demo page) to call the API
@@ -46,26 +83,20 @@ def create_app() -> FastAPI:
     app.include_router(stripe.router, prefix="/api/v1")
     app.include_router(telegram.router, prefix="/api/v1")
 
-    @app.get("/")
-    async def root() -> dict[str, str]:
-        return {
-            "service": "agentgate",
-            "env": settings.APP_ENV,
-            "version": "0.1.0",
-        }
-
-    @app.on_event("startup")
-    async def on_startup() -> None:
-        logger.info(
-            "AgentGate starting",
-            extra={
-                "env": settings.APP_ENV,
-                "debug": settings.DEBUG,
-                "log_level": settings.LOG_LEVEL,
-            },
+    @app.get(
+        "/",
+        response_model=RootResponse,
+        tags=["system"],
+        summary="Service Information",
+        description="Return basic service metadata, version, and running environment.",
+    )
+    async def root() -> RootResponse:
+        return RootResponse(
+            service="agentgate",
+            env=settings.APP_ENV,
+            version="0.1.0",
         )
 
     return app
-
 
 app = create_app()

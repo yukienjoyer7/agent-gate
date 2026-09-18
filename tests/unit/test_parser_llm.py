@@ -247,6 +247,18 @@ def test_calendar_contract_is_explicit_in_planner_schema() -> None:
     assert '"end": "<ISO 8601 datetime>"' in prompt
     assert "NEVER use\n  ``start_time`` or ``end_time``" in prompt
 
+def test_connector_first_hierarchy_in_planner_prompts() -> None:
+    prompt = llm_parser._base_system_prompt()
+    assert "PRIMARY ROUTING RULE — CONNECTOR FIRST HIERARCHY" in prompt
+    assert "ALWAYS prioritize dedicated connectors" in prompt
+    assert 'NEVER emit BROWSER_OPEN, BROWSER_CLICK, or browser interactions for tasks that belong to the supported connectors' in prompt
+    assert '"action": "list_events"' in prompt
+
+    from app.domains.agent.services.agent_planner import _replan_system_prompt
+    replan_prompt = _replan_system_prompt()
+    assert "CONNECTOR FIRST HIERARCHY: Always prioritize dedicated connectors" in replan_prompt
+    assert '"action": "list_events"' in replan_prompt
+
 
 class TestEnsureOpenStep:
     """Verify BROWSER_OPEN is prepended when needed."""

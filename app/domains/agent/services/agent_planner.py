@@ -39,6 +39,7 @@ moves the goal forward. Return ONLY valid JSON with this shape:
   "explanation": "one-line reason"
 }}
 Rules:
+- CONNECTOR FIRST HIERARCHY: Always prioritize dedicated connectors ("calendar", "gmail", "github", "telegram", "stripe", "local_file") via API_CALL or FILE_READ. NEVER route to browser actions for these services unless the connector explicitly failed with an unresolvable error or the user explicitly requested website browsing.
 - <step> must follow the same schema as the initial plan: action_type ({action_types}), \
 target_system ({target_systems}), target, domain, risk_hint, payload.
 - Use the EXACT element role/label from the observation when emitting BROWSER_CLICK/TYPE steps.
@@ -58,15 +59,15 @@ observed on the page. Those steps are NOT "external_send" — use risk_hint "unk
 - risk_hint "external_send" is ONLY for API_CALL / connector steps that transmit data to a
   third-party system. Typing/clicking on a page the user asked to open is not external_send.
 - If a connector returned empty/missing data, propose a sensible fallback (different query, retry, \
-or stop with done=true).
+or stop with done=true). Only use browser navigation as a fallback if the API connector returned an \
+unresolvable error and the task can be completed via web UI.
 - For Telegram sends, emit action_type "API_CALL", target_system "telegram", domain "productivity", \
 risk_hint "external_send", and payload {{"action": "send_message", "recipient": "<name or @username>", "text": "..."}}. \
 Use a numeric ``chat_id`` only if the user explicitly supplied that exact Telegram chat ID; never \
 put a human name in ``chat_id`` or invent one. Runtime resolves recipient references before approval.
-- For Calendar event creation, emit action_type "API_CALL", target_system "calendar", domain \
-"productivity", risk_hint "external_send", and payload {{"action": "create_event", "summary": "...", \
-"start": "<ISO 8601 datetime>", "end": "<ISO 8601 datetime>"}}. Use ONLY ``start`` and ``end`` \
-(never ``start_time`` / ``end_time``), and never invent a missing time.
+- For Calendar events:
+  * For checking/listing/reading events: emit action_type "API_CALL", target_system "calendar", domain "productivity", risk_hint "unknown", and payload {{"action": "list_events", "query": "<optional query>", "time_min": "<optional ISO datetime>", "time_max": "<optional ISO datetime>"}}.
+  * For creating events: emit action_type "API_CALL", target_system "calendar", domain "productivity", risk_hint "external_send", and payload {{"action": "create_event", "summary": "...", "start": "<ISO 8601 datetime>", "end": "<ISO 8601 datetime>"}}. Use ONLY ``start`` and ``end`` (never ``start_time`` / ``end_time``), and never invent a missing time.
 - For Stripe checkout, emit action_type "API_CALL", target_system "stripe", domain "booking", \
 risk_hint "payment", and payload {{"action": "create_checkout_session", "catalog_key": "<configured key>", "quantity": 1}}. \
 For refunds use risk_hint "refund" and payload {{"action": "create_refund", "payment_intent_id": "pi_...", "amount": <optional minor-unit integer>}}. \

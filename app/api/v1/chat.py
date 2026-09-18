@@ -5,12 +5,12 @@ import json
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.config.settings import get_settings
-from app.core.run_schema import RunStatus
+from app.core.run_schema import RunStatus, StepStatus
 from app.domains.agent.services.run_registry import run_registry
 from app.domains.agent.services.run_service import start_agent_run
 from app.llm.services import parse_prompt_plan
@@ -54,6 +54,52 @@ class ParseResponse(BaseModel):
     raw_prompt: str = Field(description="Original prompt text")
 
 
+class ExecuteResponse(BaseModel):
+    run_id: str = Field(..., description="Unique run identifier", examples=["run_634a174c8449"])
+    status: RunStatus = Field(..., description="Initial run execution status", examples=[RunStatus.RUNNING])
+    prompt: str = Field(..., description="Original user prompt", examples=["open example.com"])
+    stream_endpoint: str = Field(
+        ...,
+        description="Endpoint URL to subscribe to SSE live execution stream",
+        examples=["/api/v1/chat/execute/stream"],
+    )
+    respond_endpoint: str = Field(
+        ...,
+        description="Endpoint URL to submit user input or approval",
+        examples=["/api/v1/chat/execute/run_634a174c8449/respond"],
+    )
+    state_endpoint: str = Field(
+        ...,
+        description="Endpoint URL to inspect current run state",
+        examples=["/api/v1/chat/execute/run_634a174c8449"],
+    )
+
+
+class StepPublicResponse(BaseModel):
+    index: int = Field(..., description="Step index (0-based)", examples=[0])
+    action_id: str = Field(..., description="Unique action identifier", examples=["act_a1b2c3d4e5f6"])
+    status: StepStatus = Field(..., description="Current status of the step", examples=[StepStatus.PENDING])
+    data: dict[str, Any] = Field(..., description="Step action data and parameters")
+    decision: dict[str, Any] | None = Field(default=None, description="Guardrail decision details")
+    execution: dict[str, Any] | None = Field(default=None, description="Execution results")
+    sanitize_fields: list[dict[str, Any]] | None = Field(
+        default=None, description="Sanitize fields requiring input"
+    )
+    audit_event: dict[str, Any] | None = Field(
+        default=None, description="Associated audit event data"
+    )
+
+    model_config = {"extra": "allow"}
+
+
+class RunStateResponse(BaseModel):
+    run_id: str = Field(..., description="Unique run identifier", examples=["run_634a174c8449"])
+    status: RunStatus = Field(..., description="Current overall status of the run", examples=[RunStatus.RUNNING])
+    prompt: str = Field(..., description="Original prompt text", examples=["open example.com"])
+    created_at: str = Field(..., description="ISO 8601 creation timestamp")
+    steps: list[StepPublicResponse] = Field(default_factory=list, description="List of step states")
+
+
 class RespondRequest(BaseModel):
     """User response to a paused step.
 
@@ -62,8 +108,10 @@ class RespondRequest(BaseModel):
       key → value; ``text`` is sugar for a single-field step).
     """
 
-    step_index: int = Field(..., ge=0, description="Index of the paused step")
-    action: Literal["approve", "decline", "input"]
+    step_index: int = Field(..., ge=0, description="Index of the paused step", examples=[0])
+    action: Literal["approve", "decline", "input"] = Field(
+        ..., description="Response action type", examples=["approve"]
+    )
     text: str | None = Field(default=None, description="Free-text answer (action=input)")
     fields: dict[str, str] | None = Field(
         default=None, description="Payload key → value answers (action=input)"
@@ -78,7 +126,18 @@ class RespondRequest(BaseModel):
         return self
 
 
-@router.post("/parse", response_model=ParseResponse)
+class RespondResponse(BaseModel):
+    run_id: str = Field(..., description="Run identifier", examples=["run_634a174c8449"])
+    step_index: int = Field(..., description="Step index that was responded to", examples=[0])
+    action: Literal["approve", "decline", "input"] = Field(..., description="Action delivered", examples=["approve"])
+    status: Literal["accepted"] = Field(default="accepted", description="Delivery status", examples=["accepted"])
+    step_status: StepStatus | None = Field(default=None, description="Updated status of the step")
+@router.post(
+    "/parse",
+    response_model=ParseResponse,
+    summary="Parse Prompt Plan",
+    description="Parse a natural-language instruction into an AI-generated plan containing atomic steps.",
+)
 async def parse_browser_action(request: ParseRequest) -> ParseResponse:
     """
     Parse a natural-language instruction into an **AI-generated plan**.
@@ -116,8 +175,13 @@ async def parse_browser_action(request: ParseRequest) -> ParseResponse:
     )
 
 
-@router.post("/execute")
-async def execute_plan(request: ParseRequest) -> dict[str, Any]:
+@router.post(
+    "/execute",
+    response_model=ExecuteResponse,
+    summary="Execute Reactive Agent Run",
+    description="Start a reactive agent run in the background for a natural-language instruction and return run tracking endpoints.",
+)
+async def execute_plan(request: ParseRequest) -> ExecuteResponse:
     """
     Start a **reactive agent run** for a natural-language instruction.
 
@@ -135,17 +199,27 @@ async def execute_plan(request: ParseRequest) -> dict[str, Any]:
     ``GET /api/v1/runs/{run_id}/actions`` for the audit trail.
     """
     run = start_agent_run(request.prompt)
-    return {
-        "run_id": run.run_id,
-        "status": run.status.value,
-        "prompt": request.prompt,
-        "stream_endpoint": "/api/v1/chat/execute/stream",
-        "respond_endpoint": f"/api/v1/chat/execute/{run.run_id}/respond",
-        "state_endpoint": f"/api/v1/chat/execute/{run.run_id}",
-    }
+    return ExecuteResponse(
+        run_id=run.run_id,
+        status=run.status,
+        prompt=request.prompt,
+        stream_endpoint="/api/v1/chat/execute/stream",
+        respond_endpoint=f"/api/v1/chat/execute/{run.run_id}/respond",
+        state_endpoint=f"/api/v1/chat/execute/{run.run_id}",
+    )
 
 
-@router.post("/execute/stream")
+@router.post(
+    "/execute/stream",
+    summary="Stream Reactive Agent Execution (SSE)",
+    description="Run the reactive agent loop and stream real-time events as Server-Sent Events (SSE).",
+    responses={
+        200: {
+            "description": "Server-Sent Events stream of agent lifecycle events",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
 async def stream_execute(request: ParseRequest) -> StreamingResponse:
     """
     Run the reactive agent loop and **stream** every event as Server-Sent
@@ -171,8 +245,16 @@ async def stream_execute(request: ParseRequest) -> StreamingResponse:
     )
 
 
-@router.get("/execute/{run_id}")
-async def get_run_state(run_id: str) -> dict[str, Any]:
+@router.get(
+    "/execute/{run_id}",
+    response_model=RunStateResponse,
+    summary="Get Run State",
+    description="Retrieve the current live state of a run, including overall status and individual step states.",
+    responses={404: {"description": "Run not found"}},
+)
+async def get_run_state(
+    run_id: str = Path(..., description="Unique run identifier", examples=["run_634a174c8449"]),
+) -> RunStateResponse:
     """
     Live state of a run: overall status and every step's status. Useful for
     non-streaming clients to learn that a step is ``waiting_approval`` /
@@ -181,17 +263,29 @@ async def get_run_state(run_id: str) -> dict[str, Any]:
     run = run_registry.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
-    return {
-        "run_id": run.run_id,
-        "status": run.status.value,
-        "prompt": run.prompt,
-        "created_at": run.created_at.isoformat(),
-        "steps": run.public_steps(),
-    }
+    return RunStateResponse(
+        run_id=run.run_id,
+        status=run.status,
+        prompt=run.prompt,
+        created_at=run.created_at.isoformat(),
+        steps=[StepPublicResponse(**s) for s in run.public_steps()],
+    )
 
 
-@router.post("/execute/{run_id}/respond")
-async def respond_to_step(run_id: str, request: RespondRequest) -> dict[str, Any]:
+@router.post(
+    "/execute/{run_id}/respond",
+    response_model=RespondResponse,
+    summary="Respond to Paused Step",
+    description="Deliver a user decision (approve/decline) or input values for a step that is paused waiting for user action.",
+    responses={
+        404: {"description": "Run or step not found"},
+        409: {"description": "Step is not currently waiting for a response"},
+    },
+)
+async def respond_to_step(
+    request: RespondRequest,
+    run_id: str = Path(..., description="Unique run identifier", examples=["run_634a174c8449"]),
+) -> RespondResponse:
     """
     Deliver a user response to a paused step:
 
@@ -220,14 +314,13 @@ async def respond_to_step(run_id: str, request: RespondRequest) -> dict[str, Any
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     step = run.step(request.step_index)
-    return {
-        "run_id": run.run_id,
-        "step_index": request.step_index,
-        "action": request.action,
-        "status": "accepted",
-        "step_status": step.status.value if step else None,
-    }
-
+    return RespondResponse(
+        run_id=run.run_id,
+        step_index=request.step_index,
+        action=request.action,
+        status="accepted",
+        step_status=step.status if step else None,
+    )
 
 # ── SSE plumbing ──────────────────────────────────────────────────
 

@@ -152,51 +152,53 @@ Return ONLY valid JSON (no markdown fences, no commentary) with this exact shape
   "summary": "<one-line human readable summary>"
 }}
 
-Rules:
-- action_type must be one of: {', '.join(settings.ALLOWED_ACTION_TYPES)}.
-- For browser interactions that navigate to a page, ALWAYS emit a first step BROWSER_OPEN with payload {{"url": "..."}} followed by the actual action step.
-- target_system must be one of: {', '.join(settings.ALLOWED_TARGET_SYSTEMS)}.
-- domain must be one of: {', '.join(settings.ALLOWED_DOMAINS)}.
-- risk_hint must be one of: {', '.join(settings.ALLOWED_RISK_HINTS)}.
-- payload for browser click/type: {{"url": "...", "action_type": "...", "element_id": "<slug>", "label": "<human label>", "role": "<aria role>", "value": "<text to type if any>"}}
-- payload for gmail: {{"action": "send"|"read"|"archive", "to": "...", "body": "...", "query": "..."}}
-- payload for github: {{"action": "repo_metadata", "owner": "...", "repo": "..."}}
-- payload for local_file: {{"action": "read", "path": "..."}}
-- payload for Calendar event creation: {{"action": "create_event", "summary": "...", "start": "<ISO 8601 datetime>", "end": "<ISO 8601 datetime>", "timezone": "<optional IANA timezone>", "description": "<optional>", "location": "<optional>"}}.
-  Calendar ``create_event`` MUST use the canonical keys ``start`` and ``end``; NEVER use
+PRIMARY ROUTING RULE — CONNECTOR FIRST HIERARCHY:
+1. ALWAYS prioritize dedicated connectors (action_type "API_CALL" or "FILE_READ") over browser automation whenever the user request relates to any supported connector service:
+   - "calendar" (Google Calendar): for checking, listing, searching, or creating calendar events/schedules/meetings.
+     * Check/list/search events: action_type "API_CALL", target_system "calendar", domain "productivity", risk_hint "unknown", target "calendar", payload {{"action": "list_events", "query": "<optional>", "time_min": "<optional ISO datetime>", "time_max": "<optional ISO datetime>", "max_results": 10}}.
+     * Create event: action_type "API_CALL", target_system "calendar", domain "productivity", risk_hint "external_send", target "calendar", payload {{"action": "create_event", "summary": "...", "start": "<ISO 8601 datetime>", "end": "<ISO 8601 datetime>", "timezone": "<optional IANA timezone>", "description": "<optional>", "location": "<optional>"}}.
+     * Calendar ``create_event`` MUST use the canonical keys ``start`` and ``end``; NEVER use
   ``start_time`` or ``end_time``. Use full ISO 8601 datetimes with an explicit offset when
   available. Do not invent a start or end time: if either is absent, ask for clarification.
   Example: for 'tambah event "meeting laplace #2" tanggal 13 September 2026 jam 18.00 sampai
   19.00', emit {{"action": "create_event", "summary": "meeting laplace #2", "start":
   "2026-09-13T18:00:00+07:00", "end": "2026-09-13T19:00:00+07:00"}}.
-- payload for stripe checkout: {{"action": "create_checkout_session", "catalog_key": "<configured catalog key>", "quantity": 1, "customer_email": "<optional>"}}
-- payload for stripe status: {{"action": "retrieve_checkout_session", "session_id": "cs_..."}}
-- payload for stripe refund: {{"action": "create_refund", "payment_intent_id": "pi_...", "amount": <optional positive integer in the currency minor unit>, "reason": "requested_by_customer"}}
-- Never create a Stripe price, currency, redirect URL, payout, transfer, or raw API request. Stripe
-  checkout must use a configured catalog_key. Use domain "booking" and risk_hint "payment" for
-  checkout/expiry or "refund" for refunds.
-- payload for telegram: {{"action": "send_message", "recipient": "<name or @username>", "text": "..."}}
-  or, only when the user explicitly supplied a numeric Telegram chat ID,
-  {{"action": "send_message", "chat_id": 123456789, "text": "..."}}.
-- For Telegram sends use action_type "API_CALL", target_system "telegram", domain "productivity",
-  and risk_hint "external_send". ``recipient`` is an unresolved human-readable reference;
-  ``chat_id`` is only a numeric, explicit or runtime-resolved Telegram identifier. Never put a
-  person name, display name, or @username in ``chat_id`` and never invent a chat ID.
-- target: full URL for browser, recipient address for gmail, owner/repo for github, file path for local_file,
-  or the recipient reference / explicit numeric chat ID for telegram.
-- Always prepend https:// to bare domains.
-- Keep the plan as short as the instruction requires (single API_CALL/FILE_READ step for connectors).
-- NEVER invent or guess values for passwords, tokens, API keys, PINs, OTPs, or any other secret.
-  For such fields emit a "{{field_name}}" placeholder (e.g. "{{password}}"), or leave the value
-  empty — the run pauses and asks the user for the real value before executing.
-- risk_hint "external_send" is ONLY for API_CALL / connector steps that transmit data to a
-  third-party system (e.g. gmail send, stripe payment). Typing into or clicking on a page the
-  user asked to open (BROWSER_TYPE / BROWSER_CLICK / BROWSER_OPEN / BROWSER_SCROLL) is NOT
-  external_send — use "unknown" for those.
-- Only emit BROWSER_SCREENSHOT when the user explicitly asks for a screenshot or image capture.
-  Never add screenshot steps for observation — the get_accessibility_tree tool already returns the
-  page elements you need."""
+   - "gmail" (Gmail): for reading, searching, or sending emails.
+     * Read/search emails: action_type "API_CALL", target_system "gmail", domain "productivity", risk_hint "unknown", target "gmail", payload {{"action": "list_messages", "query": "..."}} or {{"action": "read", "query": "..."}}.
+     * Send email: action_type "API_CALL", target_system "gmail", domain "productivity", risk_hint "external_send", target "<recipient email>", payload {{"action": "send", "to": "...", "body": "...", "subject": "<optional>"}}.
+   - "github" (GitHub): for inspecting repository metadata and issues.
+     * Repo info: action_type "API_CALL", target_system "github", domain "code_protection", risk_hint "unknown", target "<owner>/<repo>", payload {{"action": "repo_metadata", "owner": "...", "repo": "..."}}.
+   - "telegram" (Telegram): for sending Telegram messages.
+     * Send message: action_type "API_CALL", target_system "telegram", domain "productivity", risk_hint "external_send", target "<recipient name/@username/chat_id>", payload {{"action": "send_message", "recipient": "<name or @username>", "text": "..."}} (or numeric ``chat_id`` if explicitly provided).
+   - "stripe" (Stripe Payments): for checkout sessions, session status, or refunds.
+     * Checkout: action_type "API_CALL", target_system "stripe", domain "booking", risk_hint "payment", target "stripe", payload {{"action": "create_checkout_session", "catalog_key": "<configured catalog key>", "quantity": 1, "customer_email": "<optional>"}}.
+     * Status: action_type "API_CALL", target_system "stripe", domain "booking", risk_hint "unknown", target "stripe", payload {{"action": "retrieve_checkout_session", "session_id": "cs_..."}}.
+     * Refund: action_type "API_CALL", target_system "stripe", domain "booking", risk_hint "refund", target "stripe", payload {{"action": "create_refund", "payment_intent_id": "pi_...", "amount": <optional positive integer in currency minor unit>, "reason": "requested_by_customer"}}.
+   - "local_file" (Local Filesystem): for reading local files.
+     * Read file: action_type "FILE_READ", target_system "local_file", domain "filesystem", risk_hint "file_read", target "<path>", payload {{"action": "read", "path": "..."}}.
 
+2. BROWSER USAGE RESTRICTIONS:
+   - NEVER emit BROWSER_OPEN, BROWSER_CLICK, or browser interactions for tasks that belong to the supported connectors above (e.g., NEVER open google.com/calendar in browser to check or add events; NEVER open mail.google.com in browser to read or send emails; NEVER open github.com in browser to check repo info).
+   - Browser actions (BROWSER_OPEN, BROWSER_CLICK, BROWSER_TYPE, BROWSER_SELECT, BROWSER_SCROLL) are ONLY allowed when:
+     a) The user explicitly requests opening, viewing, or interacting with a specific website or URL (e.g. "buka youtube.com lalu cari...", "klik tombol login di playwright.dev").
+     b) No dedicated connector exists for the requested third-party service/website.
+     c) An API connector failed with an unresolvable error and browser UI is used as an explicit fallback.
+   - For browser interactions that navigate to a page, ALWAYS emit a first step BROWSER_OPEN with payload {{"url": "..."}} followed by the actual action step.
+
+General Rules:
+- action_type must be one of: {', '.join(settings.ALLOWED_ACTION_TYPES)}.
+- target_system must be one of: {', '.join(settings.ALLOWED_TARGET_SYSTEMS)}.
+- domain must be one of: {', '.join(settings.ALLOWED_DOMAINS)}.
+- risk_hint must be one of: {', '.join(settings.ALLOWED_RISK_HINTS)}.
+- payload for browser click/type: {{"url": "...", "action_type": "...", "element_id": "<slug>", "label": "<human label>", "role": "<aria role>", "value": "<text to type if any>"}}
+- Never create a Stripe price, currency, redirect URL, payout, transfer, or raw API request. Stripe checkout must use a configured catalog_key.
+- For Telegram sends, ``recipient`` is an unresolved human-readable reference; ``chat_id`` is only a numeric, explicit or runtime-resolved Telegram identifier. Never put a person name, display name, or @username in ``chat_id`` and never invent a chat ID.
+- target: full URL for browser, recipient address for gmail, owner/repo for github, file path for local_file, "calendar" for calendar, "stripe" for stripe, or recipient reference / explicit numeric chat ID for telegram.
+- Always prepend https:// to bare domains for browser targets.
+- Keep the plan as short as the instruction requires (single API_CALL/FILE_READ step for connectors).
+- NEVER invent or guess values for passwords, tokens, API keys, PINs, OTPs, or any other secret. For such fields emit a "{{field_name}}" placeholder (e.g. "{{password}}"), or leave the value empty — the run pauses and asks the user for the real value before executing.
+- risk_hint "external_send" is ONLY for API_CALL / connector steps that transmit data to a third-party system (e.g. gmail send, telegram send, calendar create_event). Typing into or clicking on a page the user asked to open (BROWSER_TYPE / BROWSER_CLICK / BROWSER_OPEN / BROWSER_SCROLL) is NOT external_send — use "unknown" for those.
+- Only emit BROWSER_SCREENSHOT when the user explicitly asks for a screenshot or image capture. Never add screenshot steps for observation — the get_accessibility_tree tool already returns the page elements you need."""
 
 TOOLS_SYSTEM_PROMPT = """
 
