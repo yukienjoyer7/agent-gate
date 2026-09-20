@@ -1693,6 +1693,16 @@ guardrail journal <strong>before</strong> it reaches execution; if that record c
 <li><code>SANITIZE</code>, then <code>ALLOW</code>.</li>
 </ol>
 <p>Risk score and level take the <strong>maximum</strong> of the two sides.</p>
+<p>The upstream engine's own verdict is not only policy packs. Inside the engine:</p>
+<ul>
+<li>The final verdict is the stronger of the policy-pack decision and a <strong>risk-band decision</strong>: a <code>CRITICAL</code> band
+  (score &gt;= 0.85) becomes <code>BLOCK</code>, <code>HIGH</code> (&gt;= 0.6) becomes <code>NEED_APPROVAL</code>. Accumulated lower-severity findings cap
+  at 0.84, so only critical entities or a <code>CRITICAL</code> policy floor reach <code>BLOCK</code>.</li>
+<li><strong>Low-confidence override:</strong> a <code>NEED_APPROVAL</code> becomes <code>ASK_USER</code> when planner <code>confidence &lt; 0.75</code> for
+  <code>API_CALL</code>, <code>BROWSER_SUBMIT</code>, <code>BROWSER_CLICK</code>, <code>BROWSER_TYPE</code>, <code>FILE_WRITE</code> or <code>FILE_DELETE</code>, unless a detector
+  failed. <code>BLOCK</code> and <code>SANITIZE</code> are not softened.</li>
+<li>If the application rules already return <code>BLOCK</code>, the detectors are not run at all.</li>
+</ul>
 <h2 id="host-enforced-rules">Host-enforced rules<a class="headerlink" href="#host-enforced-rules" title="Permanent link">&para;</a></h2>
 <p>These hold regardless of what the planner claims or the detectors return:</p>
 <table>
@@ -1779,10 +1789,11 @@ guardrail journal <strong>before</strong> it reaches execution; if that record c
 </tbody>
 </table>
 <p>Domain base risk: <code>booking</code> CRITICAL, <code>code_protection</code> HIGH, <code>productivity</code> MEDIUM, <code>browser</code> LOW,
-<code>filesystem</code> LOW. Because <code>booking</code> (Stripe) and <code>code_protection</code> (GitHub) are high risk, actions in those
-domains need approval unless a more specific rule applies.</p>
+<code>filesystem</code> LOW. Because <code>booking</code> (Stripe) and <code>code_protection</code> (GitHub) are high risk, every action in those
+domains needs approval, including read-only ones such as <code>github.repo_metadata</code> and <code>stripe.retrieve_*</code>. Nothing in
+the merge can lower this floor.</p>
 <p>Secret patterns redacted: <code>sk-...</code> keys, Stripe <code>sk_/rk_</code> keys and <code>whsec_</code> secrets, AWS <code>AKIA...</code>, GitHub
-<code>gh?_...</code> tokens, and <code>password|secret|api_key|token = value</code> assignments.</p>
+<code>gh?_...</code> tokens, and <code>password|passwd|pwd|secret|api_key|access_token|auth_token = value</code> assignments (a bare <code>token = value</code> is not matched).</p>
 <h2 id="policy-packs">Policy packs<a class="headerlink" href="#policy-packs" title="Permanent link">&para;</a></h2>
 <p>JSON rule packs in <code>app/domains/guardrail/_vendor/agentgate/policy/packs/</code>:</p>
 <table>
@@ -1795,7 +1806,7 @@ domains need approval unless a more specific rule applies.</p>
 <tbody>
 <tr>
 <td><code>global_safety</code></td>
-<td>Prompt injection (BLOCK); credential-request phishing (BLOCK); bulk PII egress (BLOCK); destructive action (NEED_APPROVAL, higher if no rollback); low planner confidence <code>&lt; 0.5</code> on <code>API_CALL</code>/<code>BROWSER_SUBMIT</code>/<code>BROWSER_CLICK</code> (NEED_APPROVAL); PII in external action (SANITIZE); browser submit and submit-via-click (NEED_APPROVAL)</td>
+<td>Prompt injection (BLOCK); credential-request phishing (BLOCK); bulk PII egress (BLOCK); destructive action (NEED_APPROVAL, higher if no rollback); low planner confidence <code>&lt;= 0.5</code> on <code>API_CALL</code>/<code>BROWSER_SUBMIT</code>/<code>BROWSER_CLICK</code> (NEED_APPROVAL in the pack, but the engine's low-confidence override turns it into <code>ASK_USER</code>); PII in external action (SANITIZE); browser submit and submit-via-click (NEED_APPROVAL)</td>
 </tr>
 <tr>
 <td><code>code_data</code></td>

@@ -83,5 +83,5 @@ One record per action (see [audit-design](audit-design.md)).
 
 ## ActionTrace
 
-Model-ready export (JSONL): `run_id`, `action_id`, `user_goal`, `raw_tool_call`, `action_request`, `decision`,
+Model-ready export (JSONL), written only for actions run through `run_guarded_action`: `run_id`, `action_id`, `user_goal`, `raw_tool_call`, `action_request`, `decision`,
 `execution`, `audit`, `latency`, `final_status`, `created_at`.

@@ -1807,6 +1807,8 @@ resolve human recipient names to numeric chat IDs.</p>
 </tbody>
 </table>
 <h2 id="local-cli-stores">Local CLI stores<a class="headerlink" href="#local-cli-stores" title="Permanent link">&para;</a></h2>
+<p>Default locations below are the Linux ones; on macOS and Windows <code>platformdirs</code> picks the platform's user data and
+config directories. Override with <code>AGENTGATE_DATA_DIR</code> / <code>AGENTGATE_CONFIG_DIR</code>.</p>
 <table>
 <thead>
 <tr>
@@ -1859,7 +1861,7 @@ Crash recovery marks abandoned runs interrupted and <strong>never replays</stron
 </tr>
 <tr>
 <td><code>artifacts/traces/actions.jsonl</code></td>
-<td>Every guarded action</td>
+<td>Actions run through <code>run_guarded_action</code> (single-action API, connector steps in chat runs). Not browser batches, blocked, declined or timed-out steps</td>
 </tr>
 <tr>
 <td><code>artifacts/audit/guardrail.jsonl</code></td>

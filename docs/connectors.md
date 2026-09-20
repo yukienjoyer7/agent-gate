@@ -9,15 +9,16 @@ after a guardrail verdict. The `payload.action` field selects the operation; `ta
 | Connector | `target_system` | Operations | Auth | Guardrail floor |
 |-----------|-----------------|-----------|------|-----------------|
 | Local files | `local_file` | `read` | none (path allowlist) | none |
-| GitHub | `github` | `repo_metadata` | OAuth (`repo` scope) or `GITHUB_TOKEN` | none; domain `code_protection` is HIGH |
+| GitHub | `github` | `repo_metadata` | OAuth (`repo` scope) or `GITHUB_TOKEN` | no hint, but domain `code_protection` is HIGH, so it needs approval |
 | Gmail | `gmail` | `list_messages` | OAuth `gmail.readonly` or `GMAIL_ACCESS_TOKEN` | none |
 | Calendar | `calendar` | `list_events`, `create_event` | OAuth `calendar` (full) or token | create: `external_send` |
 | Telegram | `telegram` | `send_message`, `answer_callback_query`, `edit_message_reply_markup` | Bot token | `external_send` |
-| Stripe | `stripe` | create/retrieve/expire checkout session, create/retrieve refund | Secret key | `payment` / `refund` |
+| Stripe | `stripe` | create/retrieve/expire checkout session, create/retrieve refund | Secret key | `payment` / `refund`; domain `booking` is CRITICAL, so retrieve calls need approval too |
 | Browser | `browser` | open, snapshot, click, type, select, submit, scroll, screenshot | none | submit needs approval |
 
 Errors map to `AUTH`, `PERMISSION`, `RATE_LIMIT`, `TIMEOUT`, `VALIDATION`, `UNAVAILABLE`, `NOT_FOUND`,
-`UNKNOWN`. Timeouts and unavailable services are marked `retryable`.
+`UNKNOWN`. Timeouts and unavailable services are marked `retryable`. Only the Telegram and Stripe connectors emit
+`RATE_LIMIT`; GitHub, Gmail and Calendar map HTTP 403 to `PERMISSION` and 429 to `UNKNOWN`.
 
 ## Local files
 
@@ -53,9 +54,9 @@ Errors map to `AUTH`, `PERMISSION`, `RATE_LIMIT`, `TIMEOUT`, `VALIDATION`, `UNAV
 
 ## Google Calendar
 
-- Operations: `list_events` (optional `max_results`, default 10) and `create_event`.
+- Operations: `list_events` (optional `max_results` default 10, `time_min`, `time_max`, `query`, `calendar_id`) and `create_event`.
   `create_event` payload: `summary`, `start`, `end` (required), optional `timezone`, `description`, `location`,
-  `calendar_id` (default `primary`). The payload is validated first; `summary` and `description` can be redacted.
+  `calendar_id` (default `primary`). The payload is validated first (legacy keys `start_time`/`end_time` are accepted as aliases; date-only values without a time are rejected); `summary` and `description` can be redacted.
 - Timezone default: `CALENDAR_DEFAULT_TIMEZONE` (`Asia/Jakarta`).
 - Setup: enable the **Google Calendar API** on the same OAuth client and **also register**
   `GOOGLE_CALENDAR_OAUTH_REDIRECT_URI` (`.../oauth/calendar/callback`) as an authorized redirect URI.
@@ -100,7 +101,7 @@ Errors map to `AUTH`, `PERMISSION`, `RATE_LIMIT`, `TIMEOUT`, `VALIDATION`, `UNAV
 
 1. Create `app/domains/connector/<name>/` with a class extending `BaseConnector`; return `ExecutionResult` and
    `ConnectorError` on failure. Never log tokens.
-2. Register it in `APIExecutor.connectors` (`app/executors/api_executor.py`).
+2. Register it in the `_CONNECTORS` map in `app/executors/api_executor.py` (`target_system` -> module and class; `APIExecutor.connectors` is only the instance cache used for injection in tests).
 3. Add each operation to the host tool table `_TOOLS` in `app/domains/guardrail/decision/agentgate.py` with its
    trusted risk hints and the content fields that may be redacted. **Unregistered operations are blocked.**
 4. Add the system to `ALLOWED_TARGET_SYSTEMS` and `DOMAIN_BY_TARGET_SYSTEM` in settings.

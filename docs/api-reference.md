@@ -34,8 +34,9 @@ treat those as the source of truth for exact request and response bodies. CORS a
 
 ### Start
 
-`POST /chat/execute` with `{"prompt": "..."}` returns `{"run_id", "status", "prompt"}` immediately; the run
-continues in the background.
+`POST /chat/execute` with `{"prompt": "..."}` (1-1000 characters; the same limit applies to `/chat/parse` and
+`/chat/execute/stream`) returns `{"run_id", "status", "prompt", "stream_endpoint", "respond_endpoint",
+"state_endpoint"}` immediately; the run continues in the background.
 
 ### Inspect
 
@@ -55,7 +56,8 @@ curl -X POST localhost:8000/api/v1/chat/execute/$RUN/respond -H "Content-Type: a
 ```
 
 `action` is `approve`, `decline`, or `input`. `input` requires `fields` or `text`; the other two must not send
-them. The response is `{"run_id","step_index","action","status":"accepted","step_status"}`.
+them. The response is `{"run_id","step_index","action","status":"accepted","step_status"}`. Errors: `404` unknown run
+or step, `409` step is not currently waiting for a response.
 
 ### Stream events
 
@@ -63,15 +65,20 @@ them. The response is `{"run_id","step_index","action","status":"accepted","step
 
 | Event | Meaning |
 |-------|---------|
+| `run_started` | First frame; carries the initial run status |
 | `planning`, `replanning` | Planner is producing (or revising) steps |
+| `plan` | The current step list (initial plan, or after replanning) |
 | `guardrail` | A verdict for a step |
 | `step_status` | A step changed status (`index`, `status`) |
 | `executing` | A step or browser batch started |
+| `step_result` | A step or browser batch finished (status, summary, observation) |
 | `awaiting_approval` | Step paused for approve/decline |
 | `awaiting_input` | Step paused for user input |
 | `done`, `error` | Run finished or failed |
 
-A heartbeat is sent every `SSE_HEARTBEAT_SEC`. Answer paused steps with `/respond`; the stream resumes.
+While the stream is idle a `: ping` comment is sent after `SSE_HEARTBEAT_SEC` seconds. Answer paused steps with
+`/respond`; the stream resumes. If the client disconnects before the run finishes, the run is marked `cancelled`
+and its task is cancelled.
 
 ## Audit queries
 
@@ -93,7 +100,7 @@ what you registered with the provider. See [connectors](connectors.md).
 
 | Endpoint | Authentication | Failure responses |
 |----------|----------------|-------------------|
-| `POST /stripe/webhook` | `Stripe-Signature` HMAC, checked with `STRIPE_WEBHOOK_SECRET`, tolerance `STRIPE_WEBHOOK_TOLERANCE_SEC` | 400 invalid signature or payload |
+| `POST /stripe/webhook` | `Stripe-Signature` HMAC, checked with `STRIPE_WEBHOOK_SECRET`, tolerance `STRIPE_WEBHOOK_TOLERANCE_SEC` | 400 invalid signature or payload; 503 secret not configured or event persistence failed (Stripe retries) |
 | `POST /telegram/webhook` | Header `X-Telegram-Bot-Api-Secret-Token` equal to `TELEGRAM_WEBHOOK_SECRET` | 403 invalid secret; 503 secret not configured |
 
 ## Notes

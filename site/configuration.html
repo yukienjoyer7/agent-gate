@@ -1716,7 +1716,7 @@ store (<a href="cli.html">cli.md</a>).</p>
 <tr>
 <td><code>DATABASE_SSL_MODE</code></td>
 <td><code>auto</code></td>
-<td><code>auto</code> verifies TLS for Neon / <code>sslmode=require</code> URLs; <code>require</code>; <code>disable</code> (asyncpg driver only)</td>
+<td><strong>Only affects <code>postgresql+asyncpg</code> URLs</strong>; ignored with <code>postgresql+psycopg</code> (use <code>?sslmode=require</code> in the URL there). <code>auto</code> verifies TLS for Neon / <code>sslmode=require</code> URLs; <code>require</code>; <code>disable</code></td>
 </tr>
 <tr>
 <td><code>AUDIT_BACKEND</code></td>
@@ -1794,7 +1794,7 @@ store (<a href="cli.html">cli.md</a>).</p>
 <tr>
 <td><code>LLM_API_KEY</code></td>
 <td>empty</td>
-<td><code>Bearer</code> (openai) or <code>x-api-key</code> (anthropic)</td>
+<td>Sent as <code>Bearer</code> (openai), <code>x-api-key</code> (anthropic) or <code>x-goog-api-key</code> (gemini)</td>
 </tr>
 <tr>
 <td><code>LLM_TIMEOUT</code></td>
@@ -1863,6 +1863,8 @@ store (<a href="cli.html">cli.md</a>).</p>
 </tr>
 </tbody>
 </table>
+<p><code>BROWSER_SNAPSHOT</code> is registered in the host tool table but is not in the default <code>ALLOWED_ACTION_TYPES</code>, so the planner
+cannot propose it directly; a snapshot is taken as part of <code>BROWSER_OPEN</code>.</p>
 <p><code>DOMAIN_BY_TARGET_SYSTEM</code> stops the planner from lowering risk by omitting or misreporting <code>domain</code>.</p>
 <h2 id="guardrail">Guardrail<a class="headerlink" href="#guardrail" title="Permanent link">&para;</a></h2>
 <table>

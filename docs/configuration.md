@@ -22,7 +22,7 @@ Values below are the defaults in code. Where a template overrides one, it is not
 | `DATABASE_URL` | `postgresql+psycopg://agentgate:agentgate@localhost:5432/agentgate` | Must start with `postgresql` or `sqlite`. `.env.example` uses `+asyncpg` |
 | `DATABASE_POOL_SIZE` | 10 (1-100) | Pool size |
 | `DATABASE_MAX_OVERFLOW` | 20 | Extra connections |
-| `DATABASE_SSL_MODE` | `auto` | `auto` verifies TLS for Neon / `sslmode=require` URLs; `require`; `disable` (asyncpg driver only) |
+| `DATABASE_SSL_MODE` | `auto` | **Only affects `postgresql+asyncpg` URLs**; ignored with `postgresql+psycopg` (use `?sslmode=require` in the URL there). `auto` verifies TLS for Neon / `sslmode=require` URLs; `require`; `disable` |
 | `AUDIT_BACKEND` | `postgres` | `postgres` or `jsonl`. `.env.development` sets `jsonl` |
 | `ATOMIC_BROWSER_AUDIT` | `False` | One audit row per browser step instead of one per batch |
 | `AUDIT_LOG_PATH` | `artifacts/audit/events.jsonl` | JSONL audit file |
@@ -42,7 +42,7 @@ Retention values are configuration only. No cleanup job was found in the code re
 | `LLM_TYPE` | `openai` | `openai` (compatible), `anthropic`, or `gemini` |
 | `LLM_URL` | `https://openrouter.ai/api/v1/chat/completions` | Full chat endpoint |
 | `LLM_MODEL` | `openrouter/free` | Model id |
-| `LLM_API_KEY` | empty | `Bearer` (openai) or `x-api-key` (anthropic) |
+| `LLM_API_KEY` | empty | Sent as `Bearer` (openai), `x-api-key` (anthropic) or `x-goog-api-key` (gemini) |
 | `LLM_TIMEOUT` | 60 | Seconds |
 | `LLM_MAX_TOKENS` | 4096 (256-128000) | Response cap |
 | `LLM_TOOLS_ENABLED` | True | Tool calling |
@@ -62,6 +62,9 @@ Each takes a comma-separated list. Anything outside these lists is rejected or b
 | `INTERACTIVE_BROWSER_ACTIONS` | `BROWSER_CLICK, TYPE, SCROLL, SCREENSHOT, SUBMIT, SELECT` |
 | `DOMAIN_BY_TARGET_SYSTEM` | calendar/gmail/telegram -> productivity; github -> code_protection; local_file -> filesystem; stripe -> booking; browser -> browser |
 | `DEFAULT_DOMAIN` | `productivity` |
+
+`BROWSER_SNAPSHOT` is registered in the host tool table but is not in the default `ALLOWED_ACTION_TYPES`, so the planner
+cannot propose it directly; a snapshot is taken as part of `BROWSER_OPEN`.
 
 `DOMAIN_BY_TARGET_SYSTEM` stops the planner from lowering risk by omitting or misreporting `domain`.
 

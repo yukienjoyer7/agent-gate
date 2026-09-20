@@ -32,7 +32,7 @@ If Ollama is unreachable, guarded runs **pause for approval** instead of silentl
 |-------|------|-----------|
 | *(core)* | sqlalchemy, pydantic, pydantic-settings, httpx, PyYAML, platformdirs, filelock, keyring, python-json-logger | CLI and shared code |
 | `server` | fastapi, uvicorn, alembic, psycopg, asyncpg, redis | HTTP API, migrations |
-| `browser` | playwright | Browser actions |
+| `browser` | playwright | Browser actions. **Also required to start the server or run its tests**: `app.main` imports Playwright at import time |
 | `stripe` | stripe[async] | Stripe connector |
 | `dev` | pytest, pytest-asyncio, ruff, black, mypy, aiosqlite | Tests and linting |
 
@@ -141,7 +141,7 @@ Swagger UI: <http://localhost:8000/docs>.
 ```bash
 curl -X POST http://localhost:8000/api/v1/chat/execute \
   -H "Content-Type: application/json" -d '{"prompt":"Read file sample.txt"}'
-# -> {"run_id":"run_...","status":"running","prompt":"..."}
+# -> {"run_id":"run_...","status":"running","prompt":"...","stream_endpoint":"...","respond_endpoint":"...","state_endpoint":"..."}
 
 curl http://localhost:8000/api/v1/chat/execute/<run_id>
 curl "http://localhost:8000/api/v1/audits?run_id=<run_id>"
@@ -162,9 +162,18 @@ A static browser demo lives in `fe/agent-gate-demo.html` (CORS is open for it).
 
 ```bash
 cp .env.development .env         # or .env.example
+# Edit .env: set DATABASE_URL to use the Compose service name, not localhost:
+#   DATABASE_URL=postgresql+psycopg://agentgate:agentgate@postgres:5432/agentgate
 docker compose up --build
 docker compose exec api alembic upgrade head
 ```
+
+> Docker Compose reads the project `.env` for `${...}` interpolation, so the `DATABASE_URL` default in
+> `docker-compose.yml` is overridden by whatever `.env` defines. Both `.env.development` and `.env.example`
+> point at `localhost`, which is unreachable from inside the container. Either edit `DATABASE_URL` as shown or
+> delete the line from `.env`. If you change `DB_PASSWORD`, put the same password in `DATABASE_URL`.
+> `alembic upgrade head` works in the provided Compose file only because the repo is bind-mounted at `/app`
+> (`alembic.ini` is not copied into the image).
 
 The image installs `.[server,browser,stripe]` and Chromium. Compose defines `postgres` and `api`; the API
 listens on port 8000. The container reaches Ollama on the host at `http://host.docker.internal:11434`, so
@@ -187,10 +196,11 @@ python scripts/check_database_connection.py        # tests DATABASE_URL without 
 | Symptom | Likely cause / fix |
 |---------|--------------------|
 | Runs keep pausing for approval | Ollama not running or model not pulled; run `agentgate doctor` |
-| `ModuleNotFoundError: fastapi` / `alembic` | Installed without extras; use `pip install -e ".[server]"` |
+| `ModuleNotFoundError: fastapi` / `alembic` | Installed without extras; use `pip install -e ".[server,browser]"` |
+| `ModuleNotFoundError: playwright` on server start or in `pytest` | The server imports Playwright at startup; install the `browser` extra |
 | `connection refused` on the DB | PostgreSQL not up, or wrong host/driver in `DATABASE_URL` |
 | Playwright `NotImplementedError` (Windows) | Start with `python run.py` |
 | Browser actions fail | `playwright install chromium` / `agentgate setup browser` |
 | File read refused | Path outside `LOCAL_FILE_ROOT` and `ALLOWED_FILESYSTEM_PATHS` |
 | Run state gone after restart | Live run state is in memory; only audit rows persist |
-| Remote DB TLS errors | Set `DATABASE_SSL_MODE=require` (or `auto` for Neon) |
+| Remote DB TLS errors | With a `postgresql+asyncpg` URL set `DATABASE_SSL_MODE=require` (or `auto` for Neon). With `postgresql+psycopg` that setting has no effect; add `?sslmode=require` to the URL |

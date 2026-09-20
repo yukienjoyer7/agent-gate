@@ -29,6 +29,16 @@ Two verdicts are computed and merged: the **upstream engine** (detectors + polic
 
 Risk score and level take the **maximum** of the two sides.
 
+The upstream engine's own verdict is not only policy packs. Inside the engine:
+
+- The final verdict is the stronger of the policy-pack decision and a **risk-band decision**: a `CRITICAL` band
+  (score >= 0.85) becomes `BLOCK`, `HIGH` (>= 0.6) becomes `NEED_APPROVAL`. Accumulated lower-severity findings cap
+  at 0.84, so only critical entities or a `CRITICAL` policy floor reach `BLOCK`.
+- **Low-confidence override:** a `NEED_APPROVAL` becomes `ASK_USER` when planner `confidence < 0.75` for
+  `API_CALL`, `BROWSER_SUBMIT`, `BROWSER_CLICK`, `BROWSER_TYPE`, `FILE_WRITE` or `FILE_DELETE`, unless a detector
+  failed. `BLOCK` and `SANITIZE` are not softened.
+- If the application rules already return `BLOCK`, the detectors are not run at all.
+
 ## Host-enforced rules
 
 These hold regardless of what the planner claims or the detectors return:
@@ -58,11 +68,12 @@ Applied in order; first match wins (`app/domains/guardrail/decision/simple.py`):
 | 5 | Otherwise | `ALLOW` | LOW, 0.10 |
 
 Domain base risk: `booking` CRITICAL, `code_protection` HIGH, `productivity` MEDIUM, `browser` LOW,
-`filesystem` LOW. Because `booking` (Stripe) and `code_protection` (GitHub) are high risk, actions in those
-domains need approval unless a more specific rule applies.
+`filesystem` LOW. Because `booking` (Stripe) and `code_protection` (GitHub) are high risk, every action in those
+domains needs approval, including read-only ones such as `github.repo_metadata` and `stripe.retrieve_*`. Nothing in
+the merge can lower this floor.
 
 Secret patterns redacted: `sk-...` keys, Stripe `sk_/rk_` keys and `whsec_` secrets, AWS `AKIA...`, GitHub
-`gh?_...` tokens, and `password|secret|api_key|token = value` assignments.
+`gh?_...` tokens, and `password|passwd|pwd|secret|api_key|access_token|auth_token = value` assignments (a bare `token = value` is not matched).
 
 ## Policy packs
 
@@ -70,7 +81,7 @@ JSON rule packs in `app/domains/guardrail/_vendor/agentgate/policy/packs/`:
 
 | Pack | Rules (decision) |
 |------|------------------|
-| `global_safety` | Prompt injection (BLOCK); credential-request phishing (BLOCK); bulk PII egress (BLOCK); destructive action (NEED_APPROVAL, higher if no rollback); low planner confidence `< 0.5` on `API_CALL`/`BROWSER_SUBMIT`/`BROWSER_CLICK` (NEED_APPROVAL); PII in external action (SANITIZE); browser submit and submit-via-click (NEED_APPROVAL) |
+| `global_safety` | Prompt injection (BLOCK); credential-request phishing (BLOCK); bulk PII egress (BLOCK); destructive action (NEED_APPROVAL, higher if no rollback); low planner confidence `<= 0.5` on `API_CALL`/`BROWSER_SUBMIT`/`BROWSER_CLICK` (NEED_APPROVAL in the pack, but the engine's low-confidence override turns it into `ASK_USER`); PII in external action (SANITIZE); browser submit and submit-via-click (NEED_APPROVAL) |
 | `code_data` | Secret egress (BLOCK); secret present (SANITIZE); env/credentials file access (NEED_APPROVAL); source code + external send (NEED_APPROVAL); local file write (NEED_APPROVAL); local file delete (NEED_APPROVAL) |
 | `productivity` | Bulk action (NEED_APPROVAL, higher if irreversible); external email send (NEED_APPROVAL); calendar create/update (ALLOW) |
 | `booking` | External payment message (NEED_APPROVAL); browser submit in booking flow (NEED_APPROVAL); customer PII to external (SANITIZE); cancelling a booking (NEED_APPROVAL) |

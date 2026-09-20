@@ -48,6 +48,9 @@ resolve human recipient names to numeric chat IDs.
 
 ## Local CLI stores
 
+Default locations below are the Linux ones; on macOS and Windows `platformdirs` picks the platform's user data and
+config directories. Override with `AGENTGATE_DATA_DIR` / `AGENTGATE_CONFIG_DIR`.
+
 | Store | Location | Content |
 |-------|----------|---------|
 | `state.sqlite3` | `~/.local/share/agentgate/` (or `AGENTGATE_DATA_DIR`) | Run history, safe audit/traces, OAuth metadata, payment status, execution intents. Append-only audit via SQLite triggers |
@@ -68,7 +71,7 @@ Crash recovery marks abandoned runs interrupted and **never replays** payments, 
 | File | Written when |
 |------|--------------|
 | `artifacts/audit/events.jsonl` | `AUDIT_BACKEND=jsonl` |
-| `artifacts/traces/actions.jsonl` | Every guarded action |
+| `artifacts/traces/actions.jsonl` | Actions run through `run_guarded_action` (single-action API, connector steps in chat runs). Not browser batches, blocked, declined or timed-out steps |
 | `artifacts/audit/guardrail.jsonl` | Every guardrail evaluation (server default path). **Server deployments must persist this file** (ADR 0003) |
 
 `/artifacts/audit/` and `/artifacts/traces/` are gitignored.

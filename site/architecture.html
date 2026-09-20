@@ -1617,7 +1617,9 @@ Playwright). Decisions behind it: <a href="decisions/0001-architecture-foundatio
 <a href="decisions/0002-local-first-cli.html">ADR 0002</a> (local-first CLI runtime), and
 <a href="decisions/0003-embedded-guardrail-engine.html">ADR 0003</a> (embedded guardrail engine).</p>
 <h2 id="runtime-chain">Runtime chain<a class="headerlink" href="#runtime-chain" title="Permanent link">&para;</a></h2>
-<p>Every guarded action produces this chain; each record carries <code>schema_version</code>, <code>run_id</code>, <code>action_id</code>:</p>
+<p>Every guarded action follows this chain; each record carries <code>schema_version</code>, <code>run_id</code>, <code>action_id</code>. The final
+<code>ActionTrace</code> step is written only for actions that go through <code>run_guarded_action</code> (the single-action API and
+connector steps in chat runs). Browser batches and blocked, declined or timed-out chat steps get an audit row but no trace:</p>
 <pre class="mermaid"><code>flowchart LR
     A[User prompt] --&gt; B[LLM planner]
     B --&gt; C[ActionRequest]
@@ -1725,7 +1727,7 @@ calls still leave the machine.</p>
 </tr>
 <tr>
 <td><code>app/domains/approval/</code></td>
-<td>Approval schemas, services, repositories</td>
+<td>Empty placeholder package. Approval handling lives in <code>app/domains/agent/services/agent_loop.py</code> and <code>run_registry.py</code></td>
 </tr>
 <tr>
 <td><code>app/domains/connector/</code></td>
@@ -1769,9 +1771,13 @@ calls still leave the machine.</p>
 <p><code>ExecutionRouter.route(action, decision)</code>:</p>
 <ul>
 <li><code>BLOCK</code> -&gt; not executed, status <code>BLOCKED</code></li>
-<li><code>NEED_APPROVAL</code> -&gt; not executed, status <code>PENDING_APPROVAL</code></li>
-<li>otherwise -&gt; <code>BrowserExecutor</code> if <code>target_system == "browser"</code> or <code>action_type</code> starts with <code>BROWSER_</code>,
-  else <code>APIExecutor</code></li>
+<li><code>ASK_USER</code> -&gt; not executed, status <code>WAITING_USER</code></li>
+<li><code>NEED_APPROVAL</code> -&gt; not executed (status <code>PENDING_APPROVAL</code>) unless called with <code>approved=True</code></li>
+<li><code>SANITIZE</code> -&gt; not executed (status <code>SANITIZED</code>) unless called with <code>use_sanitized=True</code>; with no sanitized
+  payload the result is <code>BLOCKED</code></li>
+<li><code>ALLOW</code>, or an approved / sanitized-and-confirmed action -&gt; <code>BrowserExecutor</code> if <code>target_system == "browser"</code>
+  or <code>action_type</code> starts with <code>BROWSER_</code>, else <code>APIExecutor</code>. When the embedded engine produced a sanitized
+  payload it replaces the original payload before execution.</li>
 </ul>
 <p><code>APIExecutor</code> picks a connector by <code>target_system</code> and requires <code>payload.action</code>. <code>BrowserExecutor</code> drives the
 same Playwright pipeline used by multi-step browser plans.</p>

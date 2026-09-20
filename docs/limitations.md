@@ -11,10 +11,12 @@ and worth checking before relying on it.
   requested and decided is not recorded as separate events.
 - **`PENDING_APPROVAL` snapshots** (verified). `POST /actions/run` writes a pending row that nothing resumes;
   `action_id` is unique so it cannot be superseded.
-- **Timeouts leave no row** (verified). If a paused step times out waiting for a response, the loop returns
-  without writing an audit row.
-- **Audit write failures can be swallowed** (verified). For declined, blocked, and skipped steps the loop logs a
-  warning and continues if the audit write fails.
+- **Timeouts write a `FAILED` row** (verified). If a paused step times out waiting for a response, the run is
+  marked `failed` and a `FAILED` audit row ("timed out waiting for user response") is written.
+- **Audit write failures can be swallowed** (verified). For declined, blocked, skipped and timed-out steps the loop
+  logs a warning and continues if the audit write fails.
+- **Traces are partial** (verified). `ActionTrace` records are written only by `run_guarded_action`; browser
+  batches and blocked, declined or timed-out chat steps have audit rows but no trace.
 - **Browser batches** (verified). By default consecutive browser steps produce one combined row; enable
   `ATOMIC_BROWSER_AUDIT` for per-step rows.
 - **Live run state is in memory** (verified). It does not survive a restart.
@@ -33,6 +35,11 @@ and worth checking before relying on it.
 - **Missing file** (verified): the README links `AgentGate Technical Foundation Document.md`, which is not in
   the repository. The old README also says "Sprint 1"; `sprint.md` describes a `backend/...` layout that differs
   from the real `app/...` layout.
+- **Playwright is a hard import for the server** (verified): `app.main` imports it at startup, so the `browser`
+  extra is required to run the server or its tests. The local CLI imports it lazily.
+- **Compose `.env` interpolation** (from reading the Compose file, not run): a copied `.env` defining `DATABASE_URL`
+  with `localhost` overrides the Compose default; see [getting-started](getting-started.md#path-c-docker-compose-api--postgresql).
+- **`DATABASE_SSL_MODE`** (verified): applies only to `postgresql+asyncpg` URLs.
 - **Windows event loop** (verified): use `python run.py` so Playwright can spawn a subprocess.
 
 ## Security

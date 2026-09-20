@@ -1636,7 +1636,7 @@
 </tr>
 <tr>
 <td>Traces</td>
-<td><code>actions.jsonl</code> (<code>ActionTrace</code>), a model-ready export separate from audit</td>
+<td><code>actions.jsonl</code> (<code>ActionTrace</code>), a model-ready export separate from audit. Written only by <code>run_guarded_action</code>, so browser batches and blocked/declined/timed-out chat steps have no trace</td>
 </tr>
 </tbody>
 </table>
@@ -1672,13 +1672,18 @@
 </tr>
 <tr>
 <td>Chat run, timeout waiting</td>
-<td>None found</td>
-<td>The loop returns without a row</td>
+<td>Immediately</td>
+<td><code>FAILED</code>, "timed out waiting for user response"; the run becomes <code>failed</code> and an <code>error</code> event is emitted</td>
 </tr>
 <tr>
 <td><code>POST /actions/run</code>, <code>NEED_APPROVAL</code></td>
 <td>Immediately</td>
 <td><code>PENDING_APPROVAL</code> snapshot (nothing resumes it)</td>
+</tr>
+<tr>
+<td><code>POST /actions/run</code>, <code>SANITIZE</code> / <code>ASK_USER</code></td>
+<td>Immediately</td>
+<td><code>SANITIZED</code> / <code>WAITING_USER</code> snapshot (nothing resumes it)</td>
 </tr>
 <tr>
 <td>Browser batch (default)</td>
@@ -1700,7 +1705,7 @@ when it was decided, who decided) is not stored as separate records.</p>
   cannot later be superseded by a second row for the same action.</li>
 <li>Intermediate states (sanitized preview, clarification exchange, approval request time) are visible only in the
   live run state and the guardrail journal, not in <code>audit_logs</code>.</li>
-<li>For declined, blocked, and skipped steps the loop <strong>logs a warning and continues</strong> if the audit write fails,
+<li>For declined, blocked, skipped and timed-out steps the loop <strong>logs a warning and continues</strong> if the audit write fails,
   so an audit failure there does not stop the run.</li>
 </ul>
 <h2 id="target-event-sourced-spec-v4-agentgate_sprint2_audit_schema_v4_iddocx">Target: event-sourced (spec v4, <code>AgentGate_Sprint2_Audit_Schema_v4_ID.docx</code>)<a class="headerlink" href="#target-event-sourced-spec-v4-agentgate_sprint2_audit_schema_v4_iddocx" title="Permanent link">&para;</a></h2>

@@ -60,9 +60,13 @@ Full index: [docs/index.md](docs/index.md).
 ## Quick check
 
 ```bash
-pip install -e ".[dev,server]"
+pip install -e ".[dev,server,browser,stripe]"
 pytest
 ```
+
+The server imports Playwright at startup, so the `browser` extra is required even if you never use browser
+actions (without it `app.main` and 7 test modules fail at import). Chromium itself
+(`playwright install chromium`) is only needed for real browser runs.
 
 ## Contributing
 

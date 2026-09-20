@@ -1670,7 +1670,11 @@ but not implemented. Because run state and OAuth <code>state</code> are in proce
 <li><code>docker-compose.yml</code>: <code>postgres</code> (<code>pgvector/pgvector:pg17</code>, volume <code>postgres_data</code>, healthcheck) and <code>api</code>
   (<code>.env</code>, <code>host.docker.internal</code> mapped to the host gateway for Ollama). The repo is bind-mounted at <code>/app</code> in
   the provided Compose file, which suits development; remove the mount for production images.</li>
-<li>The Compose file reads <code>DB_PASSWORD</code> (default <code>agentgate</code>). Set your own.</li>
+<li>The Compose file reads <code>DB_PASSWORD</code> (default <code>agentgate</code>). Set your own, and set the same password in
+  <code>DATABASE_URL</code>: the API's default URL hardcodes <code>agentgate</code>. Also make sure <code>.env</code> does not point <code>DATABASE_URL</code> at
+  <code>localhost</code> (Compose interpolates <code>.env</code>, which overrides the service-name default).</li>
+<li><code>alembic.ini</code> is not copied into the image. <code>docker compose exec api alembic upgrade head</code> works with the
+  provided bind mount; a production image without the mount must copy <code>alembic.ini</code> or run migrations elsewhere.</li>
 <li><strong>Persist the guardrail journal.</strong> ADR 0003 requires server deployments to keep the evaluation journal
   (<code>GUARDRAIL_AUDIT_PATH</code>, default <code>artifacts/audit/guardrail.jsonl</code>). The provided Compose file only preserves it
   because the repo is bind-mounted. In a production image, mount a volume for <code>artifacts/</code> (and <code>data/</code> for
@@ -1776,8 +1780,8 @@ tests connectivity without printing credentials.</p>
 </tr>
 <tr>
 <td>Migration fails on TLS</td>
-<td><code>DATABASE_SSL_MODE</code></td>
-<td><code>require</code> for remote providers</td>
+<td>Driver in <code>DATABASE_URL</code>; <code>DATABASE_SSL_MODE</code></td>
+<td><code>postgresql+asyncpg</code>: <code>DATABASE_SSL_MODE=require</code>. <code>postgresql+psycopg</code>: add <code>?sslmode=require</code> to the URL</td>
 </tr>
 <tr>
 <td>OAuth callback error</td>

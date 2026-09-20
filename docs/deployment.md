@@ -18,7 +18,11 @@ but not implemented. Because run state and OAuth `state` are in process memory, 
 - `docker-compose.yml`: `postgres` (`pgvector/pgvector:pg17`, volume `postgres_data`, healthcheck) and `api`
   (`.env`, `host.docker.internal` mapped to the host gateway for Ollama). The repo is bind-mounted at `/app` in
   the provided Compose file, which suits development; remove the mount for production images.
-- The Compose file reads `DB_PASSWORD` (default `agentgate`). Set your own.
+- The Compose file reads `DB_PASSWORD` (default `agentgate`). Set your own, and set the same password in
+  `DATABASE_URL`: the API's default URL hardcodes `agentgate`. Also make sure `.env` does not point `DATABASE_URL` at
+  `localhost` (Compose interpolates `.env`, which overrides the service-name default).
+- `alembic.ini` is not copied into the image. `docker compose exec api alembic upgrade head` works with the
+  provided bind mount; a production image without the mount must copy `alembic.ini` or run migrations elsewhere.
 - **Persist the guardrail journal.** ADR 0003 requires server deployments to keep the evaluation journal
   (`GUARDRAIL_AUDIT_PATH`, default `artifacts/audit/guardrail.jsonl`). The provided Compose file only preserves it
   because the repo is bind-mounted. In a production image, mount a volume for `artifacts/` (and `data/` for
@@ -89,7 +93,7 @@ SELECT run_id, action_id, error_type, created_at FROM audit_logs
 | Every run pauses for approval | `agentgate doctor`; is Ollama up and the model pulled? | Start Ollama / `ollama pull qwen2.5:7b`; check `OLLAMA_HOST` (Docker: `host.docker.internal`) |
 | Detector timeouts | `AGENTGATE_LLM_DETECTOR_TIMEOUT`, `OLLAMA_NUM_PARALLEL` | Raise timeout, set parallelism to 6, use a lighter model |
 | 5xx on `/audits`, `/runs` | DB reachable? `AUDIT_BACKEND` | Fix `DATABASE_URL`, or switch to `jsonl` temporarily |
-| Migration fails on TLS | `DATABASE_SSL_MODE` | `require` for remote providers |
+| Migration fails on TLS | Driver in `DATABASE_URL`; `DATABASE_SSL_MODE` | `postgresql+asyncpg`: `DATABASE_SSL_MODE=require`. `postgresql+psycopg`: add `?sslmode=require` to the URL |
 | OAuth callback error | Single worker? redirect URI exact match? | Restart flow within seconds; align redirect URI with the provider console |
 | Telegram webhook 403/503 | `TELEGRAM_WEBHOOK_SECRET` set and equal to the registered secret | Re-run `scripts/set_telegram_webhook.py` |
 | Stripe webhook 400 | `STRIPE_WEBHOOK_SECRET`, clock skew | Fix secret; tolerance is `STRIPE_WEBHOOK_TOLERANCE_SEC` |

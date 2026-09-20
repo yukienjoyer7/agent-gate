@@ -1834,8 +1834,9 @@ treat those as the source of truth for exact request and response bodies. CORS a
 </table>
 <h2 id="chat-runs">Chat runs<a class="headerlink" href="#chat-runs" title="Permanent link">&para;</a></h2>
 <h3 id="start">Start<a class="headerlink" href="#start" title="Permanent link">&para;</a></h3>
-<p><code>POST /chat/execute</code> with <code>{"prompt": "..."}</code> returns <code>{"run_id", "status", "prompt"}</code> immediately; the run
-continues in the background.</p>
+<p><code>POST /chat/execute</code> with <code>{"prompt": "..."}</code> (1-1000 characters; the same limit applies to <code>/chat/parse</code> and
+<code>/chat/execute/stream</code>) returns <code>{"run_id", "status", "prompt", "stream_endpoint", "respond_endpoint",
+"state_endpoint"}</code> immediately; the run continues in the background.</p>
 <h3 id="inspect">Inspect<a class="headerlink" href="#inspect" title="Permanent link">&para;</a></h3>
 <p><code>GET /chat/execute/{run_id}</code> returns the overall <code>RunStatus</code> and each step's <code>StepStatus</code>, so you can see which
 step is waiting. <code>GET /runs/{run_id}/actions</code> returns the audit trail.</p>
@@ -1849,7 +1850,8 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
 <span class="w">     </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;step_index&quot;:0,&quot;action&quot;:&quot;input&quot;,&quot;fields&quot;:{&quot;password&quot;:&quot;...&quot;}}&#39;</span>
 </code></pre></div>
 <p><code>action</code> is <code>approve</code>, <code>decline</code>, or <code>input</code>. <code>input</code> requires <code>fields</code> or <code>text</code>; the other two must not send
-them. The response is <code>{"run_id","step_index","action","status":"accepted","step_status"}</code>.</p>
+them. The response is <code>{"run_id","step_index","action","status":"accepted","step_status"}</code>. Errors: <code>404</code> unknown run
+or step, <code>409</code> step is not currently waiting for a response.</p>
 <h3 id="stream-events">Stream events<a class="headerlink" href="#stream-events" title="Permanent link">&para;</a></h3>
 <p><code>POST /chat/execute/stream</code> keeps the connection open and emits SSE events:</p>
 <table>
@@ -1861,8 +1863,16 @@ them. The response is <code>{"run_id","step_index","action","status":"accepted",
 </thead>
 <tbody>
 <tr>
+<td><code>run_started</code></td>
+<td>First frame; carries the initial run status</td>
+</tr>
+<tr>
 <td><code>planning</code>, <code>replanning</code></td>
 <td>Planner is producing (or revising) steps</td>
+</tr>
+<tr>
+<td><code>plan</code></td>
+<td>The current step list (initial plan, or after replanning)</td>
 </tr>
 <tr>
 <td><code>guardrail</code></td>
@@ -1875,6 +1885,10 @@ them. The response is <code>{"run_id","step_index","action","status":"accepted",
 <tr>
 <td><code>executing</code></td>
 <td>A step or browser batch started</td>
+</tr>
+<tr>
+<td><code>step_result</code></td>
+<td>A step or browser batch finished (status, summary, observation)</td>
 </tr>
 <tr>
 <td><code>awaiting_approval</code></td>
@@ -1890,7 +1904,9 @@ them. The response is <code>{"run_id","step_index","action","status":"accepted",
 </tr>
 </tbody>
 </table>
-<p>A heartbeat is sent every <code>SSE_HEARTBEAT_SEC</code>. Answer paused steps with <code>/respond</code>; the stream resumes.</p>
+<p>While the stream is idle a <code>: ping</code> comment is sent after <code>SSE_HEARTBEAT_SEC</code> seconds. Answer paused steps with
+<code>/respond</code>; the stream resumes. If the client disconnects before the run finishes, the run is marked <code>cancelled</code>
+and its task is cancelled.</p>
 <h2 id="audit-queries">Audit queries<a class="headerlink" href="#audit-queries" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>curl<span class="w"> </span><span class="s2">&quot;localhost:8000/api/v1/audits?run_id=run_634a174c8449&quot;</span>
 curl<span class="w"> </span>localhost:8000/api/v1/audits/latest
@@ -1915,7 +1931,7 @@ what you registered with the provider. See <a href="connectors.html">connectors<
 <tr>
 <td><code>POST /stripe/webhook</code></td>
 <td><code>Stripe-Signature</code> HMAC, checked with <code>STRIPE_WEBHOOK_SECRET</code>, tolerance <code>STRIPE_WEBHOOK_TOLERANCE_SEC</code></td>
-<td>400 invalid signature or payload</td>
+<td>400 invalid signature or payload; 503 secret not configured or event persistence failed (Stripe retries)</td>
 </tr>
 <tr>
 <td><code>POST /telegram/webhook</code></td>

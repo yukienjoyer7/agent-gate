@@ -1578,10 +1578,12 @@ and worth checking before relying on it.</p>
   requested and decided is not recorded as separate events.</li>
 <li><strong><code>PENDING_APPROVAL</code> snapshots</strong> (verified). <code>POST /actions/run</code> writes a pending row that nothing resumes;
   <code>action_id</code> is unique so it cannot be superseded.</li>
-<li><strong>Timeouts leave no row</strong> (verified). If a paused step times out waiting for a response, the loop returns
-  without writing an audit row.</li>
-<li><strong>Audit write failures can be swallowed</strong> (verified). For declined, blocked, and skipped steps the loop logs a
-  warning and continues if the audit write fails.</li>
+<li><strong>Timeouts write a <code>FAILED</code> row</strong> (verified). If a paused step times out waiting for a response, the run is
+  marked <code>failed</code> and a <code>FAILED</code> audit row ("timed out waiting for user response") is written.</li>
+<li><strong>Audit write failures can be swallowed</strong> (verified). For declined, blocked, skipped and timed-out steps the loop
+  logs a warning and continues if the audit write fails.</li>
+<li><strong>Traces are partial</strong> (verified). <code>ActionTrace</code> records are written only by <code>run_guarded_action</code>; browser
+  batches and blocked, declined or timed-out chat steps have audit rows but no trace.</li>
 <li><strong>Browser batches</strong> (verified). By default consecutive browser steps produce one combined row; enable
   <code>ATOMIC_BROWSER_AUDIT</code> for per-step rows.</li>
 <li><strong>Live run state is in memory</strong> (verified). It does not survive a restart.</li>
@@ -1600,6 +1602,11 @@ and worth checking before relying on it.</p>
 <li><strong>Missing file</strong> (verified): the README links <code>AgentGate Technical Foundation Document.md</code>, which is not in
   the repository. The old README also says "Sprint 1"; <code>sprint.md</code> describes a <code>backend/...</code> layout that differs
   from the real <code>app/...</code> layout.</li>
+<li><strong>Playwright is a hard import for the server</strong> (verified): <code>app.main</code> imports it at startup, so the <code>browser</code>
+  extra is required to run the server or its tests. The local CLI imports it lazily.</li>
+<li><strong>Compose <code>.env</code> interpolation</strong> (from reading the Compose file, not run): a copied <code>.env</code> defining <code>DATABASE_URL</code>
+  with <code>localhost</code> overrides the Compose default; see <a href="getting-started.html#path-c-docker-compose-api--postgresql">getting-started</a>.</li>
+<li><strong><code>DATABASE_SSL_MODE</code></strong> (verified): applies only to <code>postgresql+asyncpg</code> URLs.</li>
 <li><strong>Windows event loop</strong> (verified): use <code>python run.py</code> so Playwright can spawn a subprocess.</li>
 </ul>
 <h2 id="security">Security<a class="headerlink" href="#security" title="Permanent link">&para;</a></h2>

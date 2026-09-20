@@ -1881,7 +1881,7 @@
 <tr>
 <td><code>browser</code></td>
 <td>playwright</td>
-<td>Browser actions</td>
+<td>Browser actions. <strong>Also required to start the server or run its tests</strong>: <code>app.main</code> imports Playwright at import time</td>
 </tr>
 <tr>
 <td><code>stripe</code></td>
@@ -1977,7 +1977,7 @@ curl<span class="w"> </span>http://localhost:8000/<span class="w">              
 <h3 id="7-try-a-guarded-run">7. Try a guarded run<a class="headerlink" href="#7-try-a-guarded-run" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/api/v1/chat/execute<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;prompt&quot;:&quot;Read file sample.txt&quot;}&#39;</span>
-<span class="c1"># -&gt; {&quot;run_id&quot;:&quot;run_...&quot;,&quot;status&quot;:&quot;running&quot;,&quot;prompt&quot;:&quot;...&quot;}</span>
+<span class="c1"># -&gt; {&quot;run_id&quot;:&quot;run_...&quot;,&quot;status&quot;:&quot;running&quot;,&quot;prompt&quot;:&quot;...&quot;,&quot;stream_endpoint&quot;:&quot;...&quot;,&quot;respond_endpoint&quot;:&quot;...&quot;,&quot;state_endpoint&quot;:&quot;...&quot;}</span>
 
 curl<span class="w"> </span>http://localhost:8000/api/v1/chat/execute/&lt;run_id&gt;
 curl<span class="w"> </span><span class="s2">&quot;http://localhost:8000/api/v1/audits?run_id=&lt;run_id&gt;&quot;</span>
@@ -1990,9 +1990,19 @@ curl<span class="w"> </span><span class="s2">&quot;http://localhost:8000/api/v1/
 <hr />
 <h2 id="path-c-docker-compose-api-postgresql">Path C: Docker Compose (API + PostgreSQL)<a class="headerlink" href="#path-c-docker-compose-api-postgresql" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>cp<span class="w"> </span>.env.development<span class="w"> </span>.env<span class="w">         </span><span class="c1"># or .env.example</span>
+<span class="c1"># Edit .env: set DATABASE_URL to use the Compose service name, not localhost:</span>
+<span class="c1">#   DATABASE_URL=postgresql+psycopg://agentgate:agentgate@postgres:5432/agentgate</span>
 docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>--build
 docker<span class="w"> </span>compose<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>api<span class="w"> </span>alembic<span class="w"> </span>upgrade<span class="w"> </span>head
 </code></pre></div>
+<blockquote>
+<p>Docker Compose reads the project <code>.env</code> for <code>${...}</code> interpolation, so the <code>DATABASE_URL</code> default in
+<code>docker-compose.yml</code> is overridden by whatever <code>.env</code> defines. Both <code>.env.development</code> and <code>.env.example</code>
+point at <code>localhost</code>, which is unreachable from inside the container. Either edit <code>DATABASE_URL</code> as shown or
+delete the line from <code>.env</code>. If you change <code>DB_PASSWORD</code>, put the same password in <code>DATABASE_URL</code>.
+<code>alembic upgrade head</code> works in the provided Compose file only because the repo is bind-mounted at <code>/app</code>
+(<code>alembic.ini</code> is not copied into the image).</p>
+</blockquote>
 <p>The image installs <code>.[server,browser,stripe]</code> and Chromium. Compose defines <code>postgres</code> and <code>api</code>; the API
 listens on port 8000. The container reaches Ollama on the host at <code>http://host.docker.internal:11434</code>, so
 start Ollama on the host first.</p>
@@ -2019,7 +2029,11 @@ python<span class="w"> </span>scripts/check_database_connection.py<span class="w
 </tr>
 <tr>
 <td><code>ModuleNotFoundError: fastapi</code> / <code>alembic</code></td>
-<td>Installed without extras; use <code>pip install -e ".[server]"</code></td>
+<td>Installed without extras; use <code>pip install -e ".[server,browser]"</code></td>
+</tr>
+<tr>
+<td><code>ModuleNotFoundError: playwright</code> on server start or in <code>pytest</code></td>
+<td>The server imports Playwright at startup; install the <code>browser</code> extra</td>
 </tr>
 <tr>
 <td><code>connection refused</code> on the DB</td>
@@ -2043,7 +2057,7 @@ python<span class="w"> </span>scripts/check_database_connection.py<span class="w
 </tr>
 <tr>
 <td>Remote DB TLS errors</td>
-<td>Set <code>DATABASE_SSL_MODE=require</code> (or <code>auto</code> for Neon)</td>
+<td>With a <code>postgresql+asyncpg</code> URL set <code>DATABASE_SSL_MODE=require</code> (or <code>auto</code> for Neon). With <code>postgresql+psycopg</code> that setting has no effect; add <code>?sslmode=require</code> to the URL</td>
 </tr>
 </tbody>
 </table>

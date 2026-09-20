@@ -7,7 +7,9 @@ Playwright). Decisions behind it: [ADR 0001](decisions/0001-architecture-foundat
 
 ## Runtime chain
 
-Every guarded action produces this chain; each record carries `schema_version`, `run_id`, `action_id`:
+Every guarded action follows this chain; each record carries `schema_version`, `run_id`, `action_id`. The final
+`ActionTrace` step is written only for actions that go through `run_guarded_action` (the single-action API and
+connector steps in chat runs). Browser batches and blocked, declined or timed-out chat steps get an audit row but no trace:
 
 ```mermaid
 flowchart LR
@@ -66,7 +68,7 @@ plan -> ( guardrail -> approve / sanitize / execute -> observe -> replan )*
 | `app/domains/agent/` | Planner, agent loop, guarded execution, run registry/service, browser sessions and prototype agent |
 | `app/domains/guardrail/` | Decision adapters (`agentgate`, legacy rules, LLM judge), sensitive-input detection; `_vendor/agentgate` is the embedded engine |
 | `app/domains/audit/` | Audit repositories (PostgreSQL and JSONL) |
-| `app/domains/approval/` | Approval schemas, services, repositories |
+| `app/domains/approval/` | Empty placeholder package. Approval handling lives in `app/domains/agent/services/agent_loop.py` and `run_registry.py` |
 | `app/domains/connector/` | `BaseConnector`; `filesystem`, `github`, `gmail`, `calendar`, `telegram`, `stripe` |
 | `app/domains/oauth/` | OAuth authorize/callback/refresh and token storage |
 | `app/domains/browser/` | Snapshot, selector map, and Playwright executor |
@@ -82,9 +84,13 @@ plan -> ( guardrail -> approve / sanitize / execute -> observe -> replan )*
 `ExecutionRouter.route(action, decision)`:
 
 - `BLOCK` -> not executed, status `BLOCKED`
-- `NEED_APPROVAL` -> not executed, status `PENDING_APPROVAL`
-- otherwise -> `BrowserExecutor` if `target_system == "browser"` or `action_type` starts with `BROWSER_`,
-  else `APIExecutor`
+- `ASK_USER` -> not executed, status `WAITING_USER`
+- `NEED_APPROVAL` -> not executed (status `PENDING_APPROVAL`) unless called with `approved=True`
+- `SANITIZE` -> not executed (status `SANITIZED`) unless called with `use_sanitized=True`; with no sanitized
+  payload the result is `BLOCKED`
+- `ALLOW`, or an approved / sanitized-and-confirmed action -> `BrowserExecutor` if `target_system == "browser"`
+  or `action_type` starts with `BROWSER_`, else `APIExecutor`. When the embedded engine produced a sanitized
+  payload it replaces the original payload before execution.
 
 `APIExecutor` picks a connector by `target_system` and requires `payload.action`. `BrowserExecutor` drives the
 same Playwright pipeline used by multi-step browser plans.

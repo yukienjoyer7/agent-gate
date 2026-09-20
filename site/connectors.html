@@ -1683,7 +1683,7 @@ after a guardrail verdict. The <code>payload.action</code> field selects the ope
 <td><code>github</code></td>
 <td><code>repo_metadata</code></td>
 <td>OAuth (<code>repo</code> scope) or <code>GITHUB_TOKEN</code></td>
-<td>none; domain <code>code_protection</code> is HIGH</td>
+<td>no hint, but domain <code>code_protection</code> is HIGH, so it needs approval</td>
 </tr>
 <tr>
 <td>Gmail</td>
@@ -1711,7 +1711,7 @@ after a guardrail verdict. The <code>payload.action</code> field selects the ope
 <td><code>stripe</code></td>
 <td>create/retrieve/expire checkout session, create/retrieve refund</td>
 <td>Secret key</td>
-<td><code>payment</code> / <code>refund</code></td>
+<td><code>payment</code> / <code>refund</code>; domain <code>booking</code> is CRITICAL, so retrieve calls need approval too</td>
 </tr>
 <tr>
 <td>Browser</td>
@@ -1723,7 +1723,8 @@ after a guardrail verdict. The <code>payload.action</code> field selects the ope
 </tbody>
 </table>
 <p>Errors map to <code>AUTH</code>, <code>PERMISSION</code>, <code>RATE_LIMIT</code>, <code>TIMEOUT</code>, <code>VALIDATION</code>, <code>UNAVAILABLE</code>, <code>NOT_FOUND</code>,
-<code>UNKNOWN</code>. Timeouts and unavailable services are marked <code>retryable</code>.</p>
+<code>UNKNOWN</code>. Timeouts and unavailable services are marked <code>retryable</code>. Only the Telegram and Stripe connectors emit
+<code>RATE_LIMIT</code>; GitHub, Gmail and Calendar map HTTP 403 to <code>PERMISSION</code> and 429 to <code>UNKNOWN</code>.</p>
 <h2 id="local-files">Local files<a class="headerlink" href="#local-files" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Reads only <code>read</code>, returning up to 500 characters as <code>content_preview</code>.</li>
@@ -1758,9 +1759,9 @@ after a guardrail verdict. The <code>payload.action</code> field selects the ope
 </ul>
 <h2 id="google-calendar">Google Calendar<a class="headerlink" href="#google-calendar" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Operations: <code>list_events</code> (optional <code>max_results</code>, default 10) and <code>create_event</code>.
+<li>Operations: <code>list_events</code> (optional <code>max_results</code> default 10, <code>time_min</code>, <code>time_max</code>, <code>query</code>, <code>calendar_id</code>) and <code>create_event</code>.
   <code>create_event</code> payload: <code>summary</code>, <code>start</code>, <code>end</code> (required), optional <code>timezone</code>, <code>description</code>, <code>location</code>,
-  <code>calendar_id</code> (default <code>primary</code>). The payload is validated first; <code>summary</code> and <code>description</code> can be redacted.</li>
+  <code>calendar_id</code> (default <code>primary</code>). The payload is validated first (legacy keys <code>start_time</code>/<code>end_time</code> are accepted as aliases; date-only values without a time are rejected); <code>summary</code> and <code>description</code> can be redacted.</li>
 <li>Timezone default: <code>CALENDAR_DEFAULT_TIMEZONE</code> (<code>Asia/Jakarta</code>).</li>
 <li>Setup: enable the <strong>Google Calendar API</strong> on the same OAuth client and <strong>also register</strong>
   <code>GOOGLE_CALENDAR_OAUTH_REDIRECT_URI</code> (<code>.../oauth/calendar/callback</code>) as an authorized redirect URI.
@@ -1805,7 +1806,7 @@ after a guardrail verdict. The <code>payload.action</code> field selects the ope
 <ol>
 <li>Create <code>app/domains/connector/&lt;name&gt;/</code> with a class extending <code>BaseConnector</code>; return <code>ExecutionResult</code> and
    <code>ConnectorError</code> on failure. Never log tokens.</li>
-<li>Register it in <code>APIExecutor.connectors</code> (<code>app/executors/api_executor.py</code>).</li>
+<li>Register it in the <code>_CONNECTORS</code> map in <code>app/executors/api_executor.py</code> (<code>target_system</code> -&gt; module and class; <code>APIExecutor.connectors</code> is only the instance cache used for injection in tests).</li>
 <li>Add each operation to the host tool table <code>_TOOLS</code> in <code>app/domains/guardrail/decision/agentgate.py</code> with its
    trusted risk hints and the content fields that may be redacted. <strong>Unregistered operations are blocked.</strong></li>
 <li>Add the system to <code>ALLOWED_TARGET_SYSTEMS</code> and <code>DOMAIN_BY_TARGET_SYSTEM</code> in settings.</li>

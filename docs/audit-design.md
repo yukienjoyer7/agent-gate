@@ -16,7 +16,7 @@
 | Immutability | Trigger `trg_audit_logs_immutable` rejects UPDATE and DELETE |
 | Backends | `AuditRepositoryDB` (postgres) and `AuditRepository` (JSONL), same async interface: `write`, `latest`, `list`, `by_run`, `by_action`. `get_audit_repository()` picks by `AUDIT_BACKEND` (or the CLI runtime's SQLite store) |
 | Guardrail journal | Separate `guardrail.jsonl`: one entry per **evaluation** (`guard_...` ID), including re-evaluations after input or redaction. Final audit rows reference it through `guardrail_audit_id` |
-| Traces | `actions.jsonl` (`ActionTrace`), a model-ready export separate from audit |
+| Traces | `actions.jsonl` (`ActionTrace`), a model-ready export separate from audit. Written only by `run_guarded_action`, so browser batches and blocked/declined/timed-out chat steps have no trace |
 
 ### When rows are written
 
@@ -26,8 +26,9 @@
 | Chat run, `NEED_APPROVAL` approved | After execution | Decision is `ALLOW` with `initial_decision=NEED_APPROVAL`, `approval_decision="approved"` |
 | Chat run, declined | Immediately | `SKIPPED`, "declined by user", `approval_decision="declined"` |
 | Chat run, `BLOCK` | Immediately | `BLOCKED` / `SKIPPED` |
-| Chat run, timeout waiting | None found | The loop returns without a row |
+| Chat run, timeout waiting | Immediately | `FAILED`, "timed out waiting for user response"; the run becomes `failed` and an `error` event is emitted |
 | `POST /actions/run`, `NEED_APPROVAL` | Immediately | `PENDING_APPROVAL` snapshot (nothing resumes it) |
+| `POST /actions/run`, `SANITIZE` / `ASK_USER` | Immediately | `SANITIZED` / `WAITING_USER` snapshot (nothing resumes it) |
 | Browser batch (default) | After the batch | **One combined row** for consecutive browser steps sharing a URL |
 | Browser batch, `ATOMIC_BROWSER_AUDIT=true` | Per step | One row per step (own `action_id`, shared `run_id`); after a mid-batch failure the remaining steps are `SKIPPED` |
 
@@ -40,7 +41,7 @@ when it was decided, who decided) is not stored as separate records.
   cannot later be superseded by a second row for the same action.
 - Intermediate states (sanitized preview, clarification exchange, approval request time) are visible only in the
   live run state and the guardrail journal, not in `audit_logs`.
-- For declined, blocked, and skipped steps the loop **logs a warning and continues** if the audit write fails,
+- For declined, blocked, skipped and timed-out steps the loop **logs a warning and continues** if the audit write fails,
   so an audit failure there does not stop the run.
 
 ## Target: event-sourced (spec v4, `AgentGate_Sprint2_Audit_Schema_v4_ID.docx`)
