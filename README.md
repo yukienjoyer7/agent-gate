@@ -1,205 +1,69 @@
 # AgentGate
 
-Guarded agent execution platform (MVP). Agents propose actions; a guardrail layer
-scores risk and routes them to auto-execution, human approval, or rejection — with
-full audit trails and benchmarking of raw vs. guarded execution.
+AgentGate is a **guardrail runtime for AI agents**. An LLM planner *proposes* actions (read a file, send a
+Telegram message, create a calendar event, click a button, start a Stripe checkout). AgentGate evaluates each
+one **before** it runs and decides: execute, block, ask a human, ask the user for missing or sensitive input,
+or redact first. Every action leaves an audit record.
 
-Architecture: **Modular Monolith**, with a local Python CLI and an optional
-FastAPI/PostgreSQL server adapter.
-See the [Technical Foundation Document](./AgentGate%20Technical%20Foundation%20Document.md) for the full Sprint 0 design.
-
-## Local CLI
-
-```bash
-pipx install .
-agentgate init
-agentgate doctor
-agentgate run "Read README.md"
-agentgate history
+```
+User prompt -> LLM planner -> ActionRequest -> Guardrail -> Decision router
+            -> API / Browser executor -> ExecutionResult -> AuditEvent -> ActionTrace
 ```
 
-No application server, Docker, PostgreSQL, or Redis is required for the CLI.
-Guarded runs use the embedded [NafisNaufal/agentgate](https://github.com/NafisNaufal/agentgate)
-engine and require Ollama with `qwen2.5:7b` by default. Run `ollama pull qwen2.5:7b`
-and start Ollama before guarded runs; `agentgate doctor` reports whether it is ready.
-See the [local CLI guide](./docs/cli.md) for credentials, optional browser and
-Stripe extras, approvals, JSON output, and supported commands.
+## Two ways to run it
 
-## Server development quickstart
+| Mode | Needs | Use it when |
+|------|-------|-------------|
+| **Local CLI** (`agentgate`) | Python 3.11+, LLM key, Ollama | You want guarded runs from a terminal, no server or database |
+| **Server** (FastAPI + PostgreSQL) | Python 3.11+, PostgreSQL, Ollama, LLM key | You want the HTTP API, SSE streaming, OAuth, Stripe/Telegram webhooks, a browser demo |
+
+Both share the same planner, guardrail, connectors, and approval semantics.
+
+## Start here
+
+| I want to... | Read |
+|--------------|------|
+| Install and run it | [Getting started](docs/getting-started.md) |
+| Understand how it works | [Architecture](docs/architecture.md) |
+| Know how decisions are made | [Guardrail policy](docs/guardrail-policy.md) |
+| Call the API | [API reference](docs/api-reference.md) |
+| Configure it | [Configuration](docs/configuration.md) |
+| Connect Gmail / GitHub / Calendar / Telegram / Stripe | [Connectors](docs/connectors.md) |
+| Deploy and operate it | [Deployment and operations](docs/deployment.md) |
+| Assess the risks | [Security and threat model](docs/security.md) |
+| See what is unfinished | [Known limitations](docs/limitations.md) |
+
+Full index: [docs/index.md](docs/index.md).
+
+## The five decisions
+
+| Decision | Meaning |
+|----------|---------|
+| `ALLOW` | Execute now |
+| `BLOCK` | Never execute |
+| `NEED_APPROVAL` | Pause until a human approves or declines |
+| `SANITIZE` | Sensitive content found or input missing; redact or ask the user to supply it |
+| `ASK_USER` | Too little information; ask a clarifying question |
+
+## What it can act on
+
+| Target | Operations |
+|--------|-----------|
+| Local files | `read` (allowlisted directories only) |
+| GitHub | `repo_metadata` |
+| Gmail | `list_messages` (read-only) |
+| Google Calendar | `list_events`, `create_event` |
+| Telegram | `send_message`, `answer_callback_query`, `edit_message_reply_markup` |
+| Stripe | checkout create/retrieve/expire, refund create/retrieve |
+| Browser (Playwright) | open, snapshot, click, type, select, submit, scroll, screenshot |
+
+## Quick check
 
 ```bash
-# 1. Python env + deps
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,server,browser,stripe]"
-
-# 2. Config
-cp .env.example .env        # fill in values as needed
-
-# 3. Services (Postgres + Redis)
-docker compose up -d
-
-# 4. Migrations
-alembic upgrade head
-
-# 5. Run the API
-uvicorn app.main:app --reload
-# -> http://localhost:8000/api/v1/health
-```
-
-## Tests
-
-```bash
+pip install -e ".[dev,server]"
 pytest
 ```
 
-To verify the configured database without printing credentials, run:
-
-```bash
-python scripts/check_database_connection.py
-```
-
-## Layout
-
-| Path | Purpose |
-|------|---------|
-| `app/api/` | HTTP routes (versioned under `v1/`) |
-| `app/domains/` | Domain logic: agent, guardrail, approval, audit, connector, browser, benchmark |
-| `app/executors/` | API / browser execution + decision routing |
-| `app/llm/` | LLM providers, tool registry, planner |
-| `app/database/` | Session, base, Alembic migrations |
-| `app/models/` | SQLAlchemy ORM models |
-| `app/workers/` | Async workers (future Redis queue) |
-| `deployment/` | Docker / Compose / nginx |
-
-Status: **Sprint 1 — guarded local/browser demo path.**
-
-## Sprint 1 demos
-
-```bash
-python scripts/run_demo_scenario.py local_file_read
-python scripts/run_demo_scenario.py browser_snapshot
-python scripts/export_audit.py --latest
-python scripts/export_traces.py --latest
-```
-
-Audit events append to `artifacts/audit/events.jsonl` by default. Action traces
-append to `artifacts/traces/actions.jsonl`. The browser path is a mock skeleton
-until the Playwright executor is hardened.
-
-## Integrations
-
-- [Telegram](./docs/integrations/telegram.md): inbound bot webhook channel and
-  outbound guarded `telegram.send_message` connector.
-- [Stripe](./docs/integrations/stripe.md): approval-gated hosted checkout,
-  refunds, payment status, and signed webhook reconciliation.
-- [Guardrail engine](./docs/integrations/guardrail.md): merged engine, detector
-  setup, policy mapping, pre-execution audit, and migration from the legacy judge.
-
-## Interactive chat runs (reactive agent loop)
-
-`POST /api/v1/chat/execute` now runs a **plan-then-react loop** instead of a
-parse-once/run-straight-through pipeline:
-
-```
-plan -> (guardrail -> approve / sanitize / execute -> observe -> replan)*
-```
-
-- Every step is guardrail-checked **one at a time** before it runs.
-- `NEED_APPROVAL` steps **pause** until you approve or decline them.
-- Sensitive steps (empty `password`/`token`/`{{placeholder}}` payload values)
-  get a **sanitize** status and pause until you type the value.
-- On failure (e.g. a login form appears) or when the plan is exhausted (e.g.
-  the calendar returned no events) the LLM **re-plans** the next step(s).
-
-### Endpoints
-
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /api/v1/chat/execute` | Start a run in the background; returns `run_id` |
-| `POST /api/v1/chat/execute/stream` | Same run, but streams every event as **SSE** (`planning`, `guardrail`, `step_status`, `executing`, `awaiting_approval`, `awaiting_input`, `replanning`, `done`, ...) |
-| `POST /api/v1/chat/execute/{run_id}/respond` | Answer a paused step: `approve`, `decline`, or `input` (text / `fields`) for sanitize steps |
-| `GET /api/v1/chat/execute/{run_id}` | Live run state: overall status + per-step status (see which step waits) |
-| `GET /api/v1/runs/{run_id}/actions` | Poll the audit trail of a run |
-
-Example SSE flow: start `POST /chat/execute/stream`, keep the connection open,
-then `POST /chat/execute/{run_id}/respond` with
-`{"step_index": 0, "action": "approve"}` (or
-`{"action": "input", "fields": {"password": "..."}}`) — the stream resumes live.
-
-### Guardrail with a dedicated model
-
-`GUARDRAIL_BACKEND=agentgate` is the default. The merged engine runs six local
-Ollama detectors, applies the upstream policy packs, scores risk, and prepares
-redactions. Existing application restrictions still set a minimum verdict.
-`AGENTGATE_LLM_DETECTOR_MODEL` selects the detector model independently of the
-planner's `LLM_MODEL`. An unavailable or malformed detector response requires
-approval; failure to persist the evaluation prevents execution.
-
-For an explicit rollback, `GUARDRAIL_BACKEND=legacy` restores the previous rules
-and optional judge (`GUARDRAIL_LLM_ENABLED` / `GUARDRAIL_MODEL`). There is no
-automatic fallback to that backend. See the [integration guide](./docs/integrations/guardrail.md).
-
-### LLM provider config
-
-The LLM provider is configured entirely via env (see `.env.example`):
-
-| Env var | Purpose |
-|---------|---------|
-| `LLM_TYPE` | API dialect: `openai` (OpenAI-compatible) or `anthropic` |
-| `LLM_URL` | Full chat endpoint (e.g. `.../v1/chat/completions` or `.../v1/messages`) |
-| `LLM_MODEL` | Model id (e.g. `openrouter/free`, `claude-...`) |
-| `LLM_API_KEY` | API key (`Bearer` for openai, `x-api-key` for anthropic) |
-| `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | Request timeout / anthropic `max_tokens` |
-
-The shared client (`app.llm.services.client`) adapts the canonical payload/
-response between the two dialects automatically (system message, tools,
-tool-call round-trips). These settings configure the planner. The default
-guardrail uses its separate Ollama endpoint and detector model.
-
 ## Contributing
 
-### Getting started
-
-1. Fork/clone the repo and follow [Server development quickstart](#server-development-quickstart).
-2. Install dev tooling: `pip install -e ".[dev,server,browser,stripe]"`.
-3. Create a branch off `main` — never commit directly to `main`.
-
-### Branch & commit conventions
-
-- **Branches:** `<type>/<short-description>`, e.g. `feat/approval-queue`, `fix/audit-timestamp`.
-- **Commits:** [Conventional Commits](https://www.conventionalcommits.org/) —
-  `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`. Keep them small and focused.
-
-### Where code goes
-
-AgentGate is a **Modular Monolith** with strict domain boundaries. Put code in the
-right place and keep domains decoupled:
-
-- New HTTP endpoint → `app/api/v1/`, with logic delegated to a domain service.
-- Business logic → the relevant `app/domains/<domain>/` package — never in the router.
-- New connector → implement `BaseConnector.execute(action, payload)` from
-  `app/domains/connector/base.py`.
-- Cross-cutting config → `app/config/`; shared helpers → `app/utils/`.
-
-### Before you push
-
-Run the full local check — all must pass:
-
-```bash
-ruff check .          # lint
-black --check .        # formatting (run `black .` to fix)
-mypy app               # type checking
-pytest                 # tests
-```
-
-- Add or update tests for any behavior change (`tests/unit`, `tests/integration`, `tests/e2e`).
-- Update `alembic` migrations when models change: `alembic revision --autogenerate -m "<change>"`.
-- **Never commit secrets.** Configuration lives in `.env*` (gitignored); only `.env.example` is tracked.
-
-### Pull requests
-
-- Keep PRs scoped to a single concern; link the related issue/sprint task.
-- Describe the change, how you tested it, and any migration or config impact.
-- Record significant architectural decisions as an ADR in `docs/decisions/`
-  (see [`0001-architecture-foundation.md`](./docs/decisions/0001-architecture-foundation.md)).
-- At least one review approval is required before merge; squash-merge into `main`.
+See [docs/contributing.md](docs/contributing.md) and [docs/testing.md](docs/testing.md).

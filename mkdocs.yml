@@ -1,0 +1,79 @@
+site_name: AgentGate
+site_description: Guardrail runtime for AI agents
+docs_dir: docs
+site_dir: site
+use_directory_urls: false
+
+theme:
+  name: material
+  font: false
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+
+markdown_extensions:
+  - tables
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+
+nav:
+  - Home: index.md
+  - Use it:
+      - Getting started: getting-started.md
+      - Local CLI: cli.md
+      - API reference: api-reference.md
+      - Service contracts (earlier): service-contracts.md
+      - Configuration: configuration.md
+      - Connectors: connectors.md
+  - Understand it:
+      - Architecture: architecture.md
+      - Guardrail policy: guardrail-policy.md
+      - Runtime contracts: contracts.md
+      - Data model: data-model.md
+      - Audit design: audit-design.md
+      - Glossary: glossary.md
+  - Run and secure it:
+      - Deployment and operations: deployment.md
+      - Security and threat model: security.md
+      - Known limitations: limitations.md
+  - Build on it:
+      - Contributing: contributing.md
+      - Testing: testing.md
+  - Integrations:
+      - Guardrail engine: integrations/guardrail.md
+      - Stripe: integrations/stripe.md
+      - Telegram: integrations/telegram.md
+  - Decisions (ADRs):
+      - 0001 Architecture foundation: decisions/0001-architecture-foundation.md
+      - 0002 Local-first CLI: decisions/0002-local-first-cli.md
+      - 0003 Embedded guardrail engine: decisions/0003-embedded-guardrail-engine.md
+      - 0004 Audit granularity: decisions/0004-audit-granularity.md
+  - Changelog:
+      - Atomic browser audit: CHANGELOG-atomic-browser-audit.md
+
+plugins:
+  - search
+  - offline
