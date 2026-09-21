@@ -80,6 +80,11 @@ def test_execute_starts_background_run(monkeypatch) -> None:
 
     assert _wait_until_done(body["run_id"]) == "done"
 
+    state = client.get(f"/api/v1/chat/execute/{body['run_id']}")
+    assert state.status_code == 200
+    step = state.json()["steps"][0]
+    assert step["data"]["action_type"] == "BROWSER_OPEN"
+
 
 def test_stream_execute_emits_sse_events(monkeypatch) -> None:
     _install_browser_fakes(monkeypatch)

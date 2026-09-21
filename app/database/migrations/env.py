@@ -21,10 +21,12 @@ if sys.platform == "win32":
 # This keeps the ORM model definitions and Alembic metadata aligned.
 from app.database.models import (  # noqa: F401
     AuditLog,
+    BrowserSession,
     OAuthToken,
     StripePayment,
     StripeWebhookEvent,
     TelegramContact,
+    TelegramLinkToken,
 )
 
 # this is the Alembic Config object, which provides

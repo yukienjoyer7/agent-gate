@@ -1,8 +1,10 @@
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field, model_validator
 
+from app.api.audit_scope import event_belongs_to_owner
+from app.api.session_context import OwnerContext, get_owner_context
 from app.config.settings import get_settings
 from app.core.audit_schema import AuditEvent
 from app.domains.agent.services import run_guarded_action
@@ -25,7 +27,10 @@ class ActionProposalRequest(BaseModel):
     )
     target: str | dict[str, Any] | None = Field(
         default=None,
-        description="Target resource, endpoint, path, or identifier",
+        description=(
+            "Target resource, endpoint, path, or identifier; omitted or null "
+            "defaults to target_system"
+        ),
         examples=["sample.txt"],
     )
     domain: str | None = Field(
@@ -71,7 +76,10 @@ class ActionProposalRequest(BaseModel):
     )
     payload_summary: str | None = Field(
         default=None,
-        description="Optional precomputed payload summary",
+        description=(
+            "Optional precomputed payload summary; omitted or null is "
+            "generated from payload"
+        ),
     )
     risk_hint: str = Field(
         default="unknown",
@@ -148,8 +156,13 @@ class BrowserPrototypeRequest(BaseModel):
     summary="Run Guarded Action",
     description="Evaluate an action proposal through guardrails, execute it if permitted, and record the complete audit trace.",
 )
-async def run_action(proposal: ActionProposalRequest) -> AuditEvent:
+async def run_action(
+    proposal: ActionProposalRequest,
+    owner: OwnerContext = Depends(get_owner_context),
+) -> AuditEvent:
     proposal_dict = proposal.model_dump(exclude_unset=True)
+    proposal_dict["owner_id"] = owner.owner_id
+    proposal_dict["session_id"] = owner.session_id
     return await run_guarded_action(proposal_dict)
 
 
@@ -159,7 +172,10 @@ async def run_action(proposal: ActionProposalRequest) -> AuditEvent:
     summary="Run Browser Prototype Action",
     description="Execute browser prototype actions against a target URL with snapshot inspection, risk classification, and audit logging.",
 )
-async def run_browser_prototype(request: BrowserPrototypeRequest) -> AuditEvent:
+async def run_browser_prototype(
+    request: BrowserPrototypeRequest,
+    owner: OwnerContext = Depends(get_owner_context),
+) -> AuditEvent:
     return await run_browser_prototype_agent(
         url=request.url,
         action=request.action,
@@ -168,6 +184,8 @@ async def run_browser_prototype(request: BrowserPrototypeRequest) -> AuditEvent:
         risk_hint=request.risk_hint,
         timeout_ms=request.timeout_ms,
         wait_until=request.wait_until,
+        owner_id=owner.owner_id,
+        session_id=owner.session_id,
     )
 
 
@@ -180,8 +198,9 @@ async def run_browser_prototype(request: BrowserPrototypeRequest) -> AuditEvent:
 )
 async def get_action(
     action_id: str = Path(..., description="Unique action identifier", examples=["act_a1b2c3d4e5f6"]),
+    owner: OwnerContext = Depends(get_owner_context),
 ) -> AuditEvent:
     event = await get_audit_repository().by_action(action_id)
-    if event is None:
+    if event is None or not event_belongs_to_owner(event, owner):
         raise HTTPException(status_code=404, detail="action not found")
     return event

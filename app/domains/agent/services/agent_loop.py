@@ -474,7 +474,14 @@ async def _prepare_telegram_recipient(run: RunSession, step: StepState) -> Decis
         if isinstance(target, str) and target.strip() and target.strip().lower() != "telegram":
             reference = target
 
-    resolver = TelegramRecipientResolver()
+    try:
+        resolver = TelegramRecipientResolver(
+            owner_id=str(run.metadata.get("owner_id") or "default")
+        )
+    except TypeError:
+        # Preserve compatibility with injected resolver factories from the
+        # original integration surface.
+        resolver = TelegramRecipientResolver()
     resolution = await resolver.resolve(reference)
     if resolution.status == RecipientResolutionStatus.RESOLVED and resolution.chat_id is not None:
         payload["chat_id"] = resolution.chat_id
@@ -525,21 +532,18 @@ def _recipient_resolution_message(resolution: RecipientResolution) -> str:
         return (
             f'Ada beberapa kontak Telegram yang cocok dengan "{reference}". '
             f"Pilih penerima yang dimaksud:\n{candidates}\n"
-            "Berikan @username yang terdaftar atau Telegram chat ID yang valid."
+            "Berikan @username yang terdaftar untuk memilih penerima."
         )
     if resolution.status == RecipientResolutionStatus.UNAVAILABLE:
         return (
             "Registry penerima Telegram sedang tidak tersedia. Tidak ada pesan yang dikirim; "
-            "coba lagi nanti atau berikan Telegram chat ID yang valid."
+            "coba lagi nanti."
         )
     if resolution.status == RecipientResolutionStatus.INVALID:
-        return (
-            f'Penerima Telegram "{reference}" tidak valid. Berikan @username yang terdaftar '
-            "atau Telegram chat ID yang valid."
-        )
+        return f'Penerima Telegram "{reference}" tidak valid. Berikan @username yang terdaftar.'
     return (
         f'Penerima Telegram "{reference}" belum terdaftar. Minta penerima membuka bot '
-        "AgentGate dan menekan /start, atau berikan Telegram chat ID yang valid."
+        "AgentGate dan menekan Connect Telegram untuk menghubungkan akun."
     )
 
 
@@ -603,6 +607,8 @@ async def _execute_browser_batch(run: RunSession, steps: list[StepState]) -> str
             risk_hint="unknown",
             run_id=run.run_id,
             action_id=steps[0].action_id,
+            owner_id=str(run.metadata.get("owner_id") or "default"),
+            session_id=run.metadata.get("session_id"),
             skip_guardrail=True,
             settle_ms=get_settings().BROWSER_SETTLE_MS,
             persist_session=True,
@@ -766,6 +772,8 @@ async def _execute_connector_steps(
             "user_goal": run.prompt,
             "run_id": run.run_id,
             "action_id": step.action_id,
+            "owner_id": str(run.metadata.get("owner_id") or "default"),
+            "session_id": run.metadata.get("session_id"),
         }
         error_message = ""
         try:
@@ -820,6 +828,8 @@ def _action_request(run: RunSession, step: StepState) -> ActionRequest:
         "user_goal": run.prompt,
         "run_id": run.run_id,
         "action_id": step.action_id,
+        "owner_id": str(run.metadata.get("owner_id") or "default"),
+        "session_id": run.metadata.get("session_id"),
     }
     return build_action_request(proposal)
 

@@ -7,7 +7,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from app.api.v1 import actions, approvals, audits, benchmark, chat, health, oauth, runs, stripe, telegram
+from app.api.v1 import (
+    actions,
+    approvals,
+    audits,
+    benchmark,
+    chat,
+    health,
+    oauth,
+    runs,
+    sessions,
+    stripe,
+    telegram,
+)
 from app.config.logging import configure_logging
 from app.config.settings import get_settings
 
@@ -34,6 +46,7 @@ TAGS_METADATA = [
     {"name": "oauth", "description": "OAuth 2.0 connection management, authorization redirects, and callbacks."},
     {"name": "stripe", "description": "Stripe payment and checkout webhook event processing."},
     {"name": "telegram", "description": "Telegram Bot webhook and inbound update processing."},
+    {"name": "sessions", "description": "Browser demo session lifecycle and isolated run state."},
     {"name": "system", "description": "System and service information."},
 ]
 
@@ -52,7 +65,15 @@ def create_app() -> FastAPI:
                 "log_level": settings.LOG_LEVEL,
             },
         )
-        yield
+        sweeper = asyncio.create_task(_browser_session_sweeper())
+        try:
+            yield
+        finally:
+            sweeper.cancel()
+            try:
+                await sweeper
+            except asyncio.CancelledError:
+                pass
 
     app = FastAPI(
         title="AgentGate",
@@ -82,6 +103,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth.router, prefix="/api/v1")
     app.include_router(stripe.router, prefix="/api/v1")
     app.include_router(telegram.router, prefix="/api/v1")
+    app.include_router(sessions.router, prefix="/api/v1")
 
     @app.get(
         "/",
@@ -98,5 +120,18 @@ def create_app() -> FastAPI:
         )
 
     return app
+
+
+async def _browser_session_sweeper() -> None:
+    """Expire abandoned browser sessions and their ephemeral resources."""
+    from app.domains.sessions.service import expire_idle_browser_sessions
+
+    interval = get_settings().BROWSER_SESSION_SWEEP_INTERVAL_SEC
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await expire_idle_browser_sessions()
+        except Exception:  # noqa: BLE001 - keep future sweeps alive
+            logger.exception("browser session cleanup sweep failed")
 
 app = create_app()

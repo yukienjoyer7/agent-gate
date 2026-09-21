@@ -56,6 +56,26 @@ def test_send_message_success_uses_telegram_endpoint_and_payload():
     assert result.data["message_ids"] == [42]
 
 
+def test_get_bot_username_uses_get_me_without_exposing_the_token():
+    token = "123456:SECRET-TOKEN"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == f"/bot{token}/getMe"
+        return httpx.Response(200, json={"ok": True, "result": {"username": "agentgate_bot"}})
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://api.telegram.test",
+        ) as client:
+            return await TelegramConnector(client, token=token).get_bot_username()
+
+    assert _run(run()) == "agentgate_bot"
+    assert len(requests) == 1
+
+
 def test_missing_token_fails_safely():
     result = _run(TelegramConnector(token="").execute("send_message", _payload()))
 

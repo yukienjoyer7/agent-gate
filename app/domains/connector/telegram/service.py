@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import logging
 import re
+import secrets
 import threading
 from collections import deque
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.config.settings import Settings, get_settings
@@ -39,6 +42,8 @@ _TERMINAL_STATUSES = {
     RunStatus.ERROR,
     RunStatus.CANCELLED,
 }
+_START_RE = re.compile(r"^/start(?:@[A-Za-z0-9_]{5,32})?(?:\s+([A-Za-z0-9_-]+))?\s*$")
+_LINK_TOKEN_TTL = timedelta(minutes=10)
 
 
 class TelegramWebhookAuthError(Exception):
@@ -98,6 +103,36 @@ class TelegramService:
         self._approval_callbacks = BoundedDeduplicator(dedupe_size)
         self._contacts = contact_repository or TelegramContactRepository()
 
+    async def create_connection(self, owner_id: str) -> tuple[str, datetime]:
+        """Create a short-lived deep link; only its hash is persisted."""
+        settings = self._settings_factory()
+        username = str(getattr(settings, "TELEGRAM_BOT_USERNAME", "") or "").strip().lstrip("@")
+        if not username:
+            username = await self._connector.get_bot_username()
+        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+            raise ValueError("Telegram bot username is invalid")
+        token = secrets.token_urlsafe(24)
+        expires_at = datetime.now(UTC) + _LINK_TOKEN_TTL
+        await self._contacts.create_link_token(
+            owner_id,
+            token_hash=_hash_link_token(token),
+            expires_at=expires_at,
+        )
+        return f"https://t.me/{username}?start={token}", expires_at
+
+    async def connection_status(self, owner_id: str):
+        return await self._contacts.get_connection(owner_id)
+
+    async def disconnect(self, owner_id: str) -> bool:
+        return await self._contacts.disconnect(owner_id)
+
+    async def end_browser_owner_session(self, owner_id: str) -> None:
+        """Disconnect Telegram and revoke unused connect links for a session."""
+        try:
+            await self._contacts.revoke_link_tokens(owner_id)
+        finally:
+            await self._contacts.disconnect(owner_id)
+
     def validate_webhook_secret(self, received_secret: str | None) -> None:
         expected_secret = self._settings_factory().TELEGRAM_WEBHOOK_SECRET
         if not expected_secret:
@@ -130,6 +165,10 @@ class TelegramService:
             )
             return {"ok": True, "status": "ignored"}
 
+        start_token = _start_token(message.get("text"))
+        if start_token is not None:
+            return await self._handle_link_start(message, start_token, update_id)
+
         # Registration is an inbound-channel concern, not a side effect of a
         # later agent action. A /start message is therefore enough for the
         # bot to learn a contact's address for future guarded sends.
@@ -151,6 +190,57 @@ class TelegramService:
         if self._background_tasks:
             self._spawn(self._deliver_run_lifecycle(run, inbound))
         return {"ok": True, "status": "accepted", "run_id": run.run_id}
+
+    async def _handle_link_start(
+        self, message: dict[str, Any], token: str, update_id: Any
+    ) -> dict[str, Any]:
+        chat = message.get("chat")
+        sender = message.get("from")
+        if not isinstance(chat, dict) or chat.get("type") != "private":
+            return {"ok": True, "status": "ignored"}
+        chat_id = _coerce_chat_id(chat.get("id"))
+        telegram_user_id = _coerce_chat_id(sender.get("id")) if isinstance(sender, dict) else None
+        if chat_id is None or telegram_user_id is None:
+            return {"ok": True, "status": "ignored"}
+
+        profile = sender if isinstance(sender, dict) else chat
+        username = _optional_text(profile.get("username")) or _optional_text(chat.get("username"))
+        first_name = _optional_text(profile.get("first_name")) or _optional_text(
+            chat.get("first_name")
+        )
+        last_name = _optional_text(profile.get("last_name")) or _optional_text(
+            chat.get("last_name")
+        )
+        display_name = build_display_name(first_name, last_name, fallback=username)
+        try:
+            linked, reason, _ = await self._contacts.consume_link_token(
+                token_hash=_hash_link_token(token),
+                chat_id=chat_id,
+                telegram_user_id=telegram_user_id,
+                chat_type="private",
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                display_name=display_name,
+                now=datetime.now(UTC),
+            )
+        except Exception:  # noqa: BLE001 - webhook must not leak token/database details
+            logger.warning("Telegram account linking failed", extra={"update_id": update_id})
+            linked, reason = False, "unavailable"
+
+        if linked:
+            text = "Telegram berhasil terhubung ke AgentGate."
+        elif reason == "already_connected":
+            text = "Telegram ini sudah terhubung ke akun AgentGate lain."
+        else:
+            text = "Tautan Telegram tidak valid atau sudah kedaluwarsa."
+        await self._send_message(
+            chat_id,
+            text,
+            run_id="telegram_linking",
+            reply_to_message_id=message.get("message_id"),
+        )
+        return {"ok": True, "status": "accepted"}
 
     async def _register_contact(self, message: dict[str, Any], update_id: Any) -> None:
         chat = message.get("chat")
@@ -181,6 +271,11 @@ class TelegramService:
                 first_name=first_name,
                 last_name=last_name,
                 display_name=display_name,
+                telegram_user_id=(
+                    _coerce_chat_id(message.get("from", {}).get("id"))
+                    if isinstance(message.get("from"), dict)
+                    else None
+                ),
             )
         except Exception:  # noqa: BLE001 - registration must not block inbound processing
             logger.warning(
@@ -447,6 +542,17 @@ def _coerce_chat_id(value: Any) -> int | None:
 
 def _optional_text(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _start_token(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = _START_RE.fullmatch(value.strip())
+    return match.group(1) if match and match.group(1) else None
+
+
+def _hash_link_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _parse_callback_data(data: Any) -> tuple[CallbackDecision, str, int] | None:

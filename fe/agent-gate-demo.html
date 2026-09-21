@@ -239,8 +239,10 @@
   .integ-status .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
   .integ-status .dot.on { background: var(--green); }
   .integ-status .dot.off { background: var(--gray); }
+  .integ-status .dot.waiting { background: var(--yellow); animation: pulse 1.2s infinite; }
   .integ-status.on { color: var(--green); }
   .integ-status.off { color: var(--muted); }
+  .integ-status.waiting { color: var(--yellow); }
   .btn-connect {
     font-size: 12px; padding: 5px 12px; border-radius: 8px;
     background: var(--panel); border: 1px solid var(--border);
@@ -313,7 +315,7 @@
 
 <footer>
   <span>Base URL API:</span>
-  <input id="baseUrl" value="http://localhost:8000">
+  <input id="baseUrl" value="" placeholder="otomatis: origin halaman">
   <span class="muted">— pastikan backend jalan (<span class="mono">uvicorn app.main:app --port 8000</span>)</span>
 </footer>
 
@@ -333,6 +335,133 @@ let runId = null;
 const steps = new Map();      // index -> step display object
 let busy = false;
 let pendingAction = null;     // {type: 'approval'|'input', index, reasons, fields}
+let browserSessionId = null;
+let browserSessionReady = false;
+let sessionHeartbeatTimer = null;
+const browserSessionStorageKey = "agentgate-demo-session-v1";
+
+function sessionHeaders(extra = {}) {
+  return browserSessionId
+    ? { ...extra, "X-AgentGate-Session": browserSessionId }
+    : { ...extra };
+}
+
+function apiBase() {
+  const configured = baseUrlEl.value.trim().replace(/\/+$/, "");
+  if (configured) return configured;
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    return window.location.origin;
+  }
+  return "http://localhost:8000";
+}
+
+function storedBrowserSessionId() {
+  try { return sessionStorage.getItem(browserSessionStorageKey); }
+  catch { return null; }
+}
+
+function storeBrowserSessionId(sessionId) {
+  try { sessionStorage.setItem(browserSessionStorageKey, sessionId); }
+  catch { /* pagehide still closes the in-memory session when storage is blocked */ }
+}
+
+function clearStoredBrowserSessionId() {
+  try { sessionStorage.removeItem(browserSessionStorageKey); }
+  catch { /* session cleanup remains best-effort */ }
+}
+
+async function createBrowserSession() {
+  const resp = await fetch(apiBase() + "/api/v1/sessions", { method: "POST" });
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok || !body.session_id) {
+    throw new Error("API tidak dapat membuat sesi browser (HTTP " + resp.status + ")");
+  }
+  browserSessionId = body.session_id;
+  storeBrowserSessionId(browserSessionId);
+  browserSessionReady = true;
+  btnStart.disabled = false;
+  btnReset.disabled = false;
+  clearInterval(sessionHeartbeatTimer);
+  sessionHeartbeatTimer = setInterval(heartbeatBrowserSession, 120000);
+}
+
+async function endBrowserSession(sessionId, reason, useBeacon = false) {
+  if (!sessionId) return true;
+  const url = apiBase() + "/api/v1/sessions/end";
+  const body = JSON.stringify({ session_id: sessionId, reason });
+  if (useBeacon && navigator.sendBeacon) {
+    return navigator.sendBeacon(url, new Blob([body], { type: "text/plain;charset=UTF-8" }));
+  }
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: true,
+    });
+    return resp.ok;
+  } catch { /* Server-side idle expiry handles a lost cleanup request. */ return false; }
+}
+
+async function initializeBrowserSession() {
+  browserSessionReady = false;
+  btnStart.disabled = true;
+  btnReset.disabled = true;
+  clearInterval(sessionHeartbeatTimer);
+  const previousId = storedBrowserSessionId();
+  if (previousId) {
+    if (!(await endBrowserSession(previousId, "refresh"))) {
+      btnReset.disabled = false;
+      flash("Sesi lama belum dapat ditutup. Periksa koneksi lalu tekan Reset.");
+      return;
+    }
+    clearStoredBrowserSessionId();
+  }
+  try {
+    await createBrowserSession();
+  } catch (err) {
+    browserSessionId = null;
+    btnReset.disabled = false;
+    flash("Sesi browser gagal dibuat: " + err.message);
+    log("error", "Sesi browser gagal dibuat: " + err.message);
+  }
+}
+
+async function heartbeatBrowserSession() {
+  if (!browserSessionReady || !browserSessionId) return;
+  try {
+    const resp = await fetch(apiBase() + "/api/v1/sessions/heartbeat", {
+      method: "POST",
+      headers: sessionHeaders(),
+    });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+  } catch {
+    browserSessionReady = false;
+    btnStart.disabled = true;
+    flash("Sesi browser sudah berakhir. Tekan Reset untuk membuat sesi baru.");
+  }
+}
+
+async function resetBrowserSession() {
+  const oldId = browserSessionId || storedBrowserSessionId();
+  browserSessionReady = false;
+  browserSessionId = null;
+  clearInterval(sessionHeartbeatTimer);
+  resetRun();
+  btnStart.disabled = true;
+  btnReset.disabled = true;
+  if (!(await endBrowserSession(oldId, "reset"))) {
+    btnReset.disabled = false;
+    flash("Sesi lama belum dapat ditutup. Periksa koneksi lalu tekan Reset.");
+    return;
+  }
+  clearStoredBrowserSessionId();
+  await initializeBrowserSession();
+  if (browserSessionReady) {
+    await fetchIntegrationStatus();
+    flash("Sesi baru dibuat.");
+  }
+}
 
 /* ── example prompts ──────────────────────────────────────────── */
 const EXAMPLES = [
@@ -350,16 +479,17 @@ const EXAMPLES = [
 async function startRun() {
   const prompt = promptEl.value.trim();
   if (!prompt) { flash("Isi perintah dulu!"); return; }
+  if (!browserSessionReady) { flash("Sesi browser belum siap."); return; }
   if (busy) return;
   resetRun();
   setBusy(true);
 
-  const url = baseUrlEl.value.trim().replace(/\/+$/, "") + "/api/v1/chat/execute/stream";
+  const url = apiBase() + "/api/v1/chat/execute/stream";
   log("run_started", "Menghubungkan ke " + url);
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ prompt }),
     });
     if (!resp.ok) {
@@ -728,10 +858,10 @@ async function doRespond(body, okMsg) {
   const answered = pendingAction ? { type: pendingAction.type, index: pendingAction.index } : null;
   setBusy(true);
   try {
-    const resp = await fetch(baseUrlEl.value.trim().replace(/\/+$/, "") +
+    const resp = await fetch(apiBase() +
       "/api/v1/chat/execute/" + runId + "/respond", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
     const j = await resp.json().catch(() => ({}));
@@ -801,9 +931,10 @@ const PROVIDERS = [
   { key: "github",   name: "GitHub",          icon: "🐙", type: "oauth",   path: "/api/v1/oauth/github/authorize", desc: "OAuth Connector" },
   { key: "gmail",    name: "Gmail",           icon: "📧", type: "oauth",   path: "/api/v1/oauth/gmail/authorize",  desc: "OAuth Connector" },
   { key: "calendar", name: "Google Calendar", icon: "📅", type: "oauth",   path: "/api/v1/oauth/calendar/authorize", desc: "OAuth Connector" },
-  { key: "telegram", name: "Telegram Bot",    icon: "✈️", type: "service", desc: "Bot API & Webhook", info: "Bot token / webhook di backend" },
+  { key: "telegram", name: "Telegram",         icon: "✈️", type: "telegram", desc: "Connect Telegram" },
   { key: "stripe",   name: "Stripe",          icon: "💳", type: "service", desc: "Payments & Refunds", info: "API Key / webhook di backend" },
 ];
+let telegramConnecting = false;
 
 function renderIntegrations(statusMap) {
   const el = $("integrations");
@@ -825,6 +956,24 @@ function renderIntegrations(statusMap) {
         </div>
         <button class="btn-connect ${connected ? "connected" : ""}"
                 onclick="openAuth('${p.path}')">${connected ? "✓" : "Hubungkan"}</button>`;
+    } else if (p.type === "telegram") {
+      const st = statusMap[p.key] || {};
+      const connected = !!st.connected;
+      const waiting = !connected && telegramConnecting;
+      const display = st.username ? `@${st.username}` : (st.display_name || "Connected");
+      card.innerHTML = `
+        <div class="integ-icon">${p.icon}</div>
+        <div class="integ-info">
+          <div class="integ-name">${escapeHtml(p.name)}</div>
+          <div class="integ-status ${connected ? "on" : (waiting ? "waiting" : "off")}">
+            <span class="dot ${connected ? "on" : (waiting ? "waiting" : "off")}"></span>
+            ${connected ? escapeHtml(display) : (waiting ? "Menunggu Telegram…" : "Belum terhubung")}
+          </div>
+        </div>
+        <button class="btn-connect ${connected ? "connected" : ""}"
+                ${waiting ? "disabled" : `onclick="${connected ? "disconnectTelegram()" : "connectTelegram()"}"`}>
+          ${connected ? "Disconnect" : (waiting ? "Waiting…" : "Connect Telegram")}
+        </button>`;
     } else {
       // Native backend service connectors
       card.innerHTML = `
@@ -845,20 +994,97 @@ function renderIntegrations(statusMap) {
 }
 
 async function fetchIntegrationStatus() {
+  const base = apiBase();
+  const statusMap = {};
   try {
-    const resp = await fetch(baseUrlEl.value.trim().replace(/\/+$/, "") + "/api/v1/oauth/status");
-    if (resp.ok) {
-      renderIntegrations(await resp.json());
-    } else {
-      renderIntegrations({});
+    const resp = await fetch(base + "/api/v1/oauth/status");
+    if (resp.ok) Object.assign(statusMap, await resp.json());
+  } catch { /* The Telegram status is fetched independently below. */ }
+  try {
+    const resp = await fetch(base + "/api/v1/telegram/connection", {
+      headers: sessionHeaders(),
+    });
+    if (resp.ok) statusMap.telegram = await resp.json();
+  } catch { /* Keep the card in its safe disconnected state. */ }
+  renderIntegrations(statusMap);
+  return statusMap;
+}
+
+let telegramPollTimer = null;
+let telegramPollStopTimer = null;
+
+async function connectTelegram() {
+  const base = apiBase();
+  // Reserve the tab synchronously from the button click so popup blockers do
+  // not prevent opening the deep link after the API request completes.
+  const telegramWindow = window.open("about:blank", "_blank", "noopener");
+  telegramConnecting = true;
+  await fetchIntegrationStatus();
+  try {
+    const resp = await fetch(base + "/api/v1/telegram/connect", {
+      method: "POST",
+      headers: sessionHeaders(),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok || !body.connect_url) {
+      if (telegramWindow) telegramWindow.close();
+      telegramConnecting = false;
+      await fetchIntegrationStatus();
+      flash("Telegram bağlantısı başlatılamadı.");
+      return;
     }
+    if (telegramWindow) {
+      telegramWindow.location.href = body.connect_url;
+    } else {
+      window.open(body.connect_url, "_blank", "noopener");
+    }
+    flash("Telegram açıldı. Botta Start'a bastıktan sonra bağlantı güncellenecek…");
+    clearInterval(telegramPollTimer);
+    clearTimeout(telegramPollStopTimer);
+    telegramPollTimer = setInterval(async () => {
+      const current = await fetchIntegrationStatus();
+      if (current.telegram && current.telegram.connected) {
+        telegramConnecting = false;
+        clearInterval(telegramPollTimer);
+        clearTimeout(telegramPollStopTimer);
+        renderIntegrations(current);
+        flash("Telegram başarıyla bağlandı.");
+      }
+    }, 2000);
+    telegramPollStopTimer = setTimeout(async () => {
+      clearInterval(telegramPollTimer);
+      telegramConnecting = false;
+      await fetchIntegrationStatus();
+      flash("Telegram bağlantısı zaman aşımına uğradı. Yeniden deneyin.");
+    }, 10 * 60 * 1000);
   } catch {
-    renderIntegrations({});
+    if (telegramWindow) telegramWindow.close();
+    telegramConnecting = false;
+    await fetchIntegrationStatus();
+    flash("Telegram bağlantısı başlatılamadı.");
+  }
+}
+
+async function disconnectTelegram() {
+  const base = apiBase();
+  telegramConnecting = false;
+  clearInterval(telegramPollTimer);
+  clearTimeout(telegramPollStopTimer);
+  try {
+    const resp = await fetch(base + "/api/v1/telegram/connection", {
+      method: "DELETE",
+      headers: sessionHeaders(),
+    });
+    if (!resp.ok) throw new Error("disconnect failed");
+    flash("Telegram bağlantısı kesildi.");
+    await fetchIntegrationStatus();
+  } catch {
+    flash("Telegram bağlantısı kesilemedi.");
   }
 }
 
 function openAuth(path) {
-  const base = baseUrlEl.value.trim().replace(/\/+$/, "");
+  const base = apiBase();
   window.open(base + path, "_blank", "noopener");
 }
 /* ── init ─────────────────────────────────────────────────────── */
@@ -872,12 +1098,28 @@ for (const ex of EXAMPLES) {
   chipsEl.appendChild(chip);
 }
 btnStart.onclick = startRun;
-btnReset.onclick = resetRun;
+btnReset.onclick = resetBrowserSession;
 promptEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) startRun();
 });
 resetRun();
-fetchIntegrationStatus();
+btnStart.disabled = true;
+btnReset.disabled = true;
+initializeBrowserSession().then(() => {
+  if (browserSessionReady) fetchIntegrationStatus();
+});
+window.addEventListener("pagehide", () => {
+  clearInterval(sessionHeartbeatTimer);
+  browserSessionReady = false;
+  endBrowserSession(browserSessionId, "pagehide", true);
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) {
+    initializeBrowserSession().then(() => {
+      if (browserSessionReady) fetchIntegrationStatus();
+    });
+  }
+});
 </script>
 </body>
 </html>

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     GOOGLE_CALENDAR_ACCESS_TOKEN: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_WEBHOOK_SECRET: str = ""
+    TELEGRAM_BOT_USERNAME: str = ""
     TELEGRAM_API_BASE: str = "https://api.telegram.org"
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
@@ -73,6 +74,8 @@ class Settings(BaseSettings):
     LLM_URL: str = "https://openrouter.ai/api/v1/chat/completions"
     LLM_MODEL: str = "openrouter/free"
     LLM_TIMEOUT: float = 60.0
+    # Retry transient provider failures without retrying malformed requests.
+    LLM_RETRY_ATTEMPTS: int = Field(default=2, ge=0, le=5)
     # Required by the Anthropic Messages API (ignored for openai type).
     LLM_MAX_TOKENS: int = Field(default=4096, ge=256, le=128000)
 
@@ -207,6 +210,11 @@ class Settings(BaseSettings):
     SSE_HEARTBEAT_SEC: float = Field(default=15.0, ge=1.0, le=120.0)
     # Cap on retained in-memory run sessions (oldest evicted first).
     RUN_REGISTRY_MAX_SESSIONS: int = Field(default=500, ge=1, le=10000)
+
+    # Browser demo sessions expire after inactivity if a tab is closed while
+    # the browser cannot deliver its best-effort pagehide cleanup request.
+    BROWSER_SESSION_IDLE_TTL_SEC: int = Field(default=1800, ge=60, le=604800)
+    BROWSER_SESSION_SWEEP_INTERVAL_SEC: int = Field(default=60, ge=10, le=3600)
 
     # Filesystem
     LOCAL_FILE_ROOT: str = "demo_data"

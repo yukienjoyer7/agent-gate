@@ -5,13 +5,14 @@ import json
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
+from app.api.session_context import OwnerContext, get_owner_context
 from app.config.settings import get_settings
 from app.core.run_schema import RunStatus, StepStatus
-from app.domains.agent.services.run_registry import run_registry
+from app.domains.agent.services.run_registry import RunSession, run_registry
 from app.domains.agent.services.run_service import start_agent_run
 from app.llm.services import parse_prompt_plan
 
@@ -56,7 +57,9 @@ class ParseResponse(BaseModel):
 
 class ExecuteResponse(BaseModel):
     run_id: str = Field(..., description="Unique run identifier", examples=["run_634a174c8449"])
-    status: RunStatus = Field(..., description="Initial run execution status", examples=[RunStatus.RUNNING])
+    status: RunStatus = Field(
+        ..., description="Initial run execution status", examples=[RunStatus.RUNNING]
+    )
     prompt: str = Field(..., description="Original user prompt", examples=["open example.com"])
     stream_endpoint: str = Field(
         ...,
@@ -77,8 +80,12 @@ class ExecuteResponse(BaseModel):
 
 class StepPublicResponse(BaseModel):
     index: int = Field(..., description="Step index (0-based)", examples=[0])
-    action_id: str = Field(..., description="Unique action identifier", examples=["act_a1b2c3d4e5f6"])
-    status: StepStatus = Field(..., description="Current status of the step", examples=[StepStatus.PENDING])
+    action_id: str = Field(
+        ..., description="Unique action identifier", examples=["act_a1b2c3d4e5f6"]
+    )
+    status: StepStatus = Field(
+        ..., description="Current status of the step", examples=[StepStatus.PENDING]
+    )
     data: dict[str, Any] = Field(..., description="Step action data and parameters")
     decision: dict[str, Any] | None = Field(default=None, description="Guardrail decision details")
     execution: dict[str, Any] | None = Field(default=None, description="Execution results")
@@ -92,9 +99,39 @@ class StepPublicResponse(BaseModel):
     model_config = {"extra": "allow"}
 
 
+def _step_public_response(step: dict[str, Any]) -> StepPublicResponse:
+    """Adapt the flattened SSE step shape to the nested HTTP response schema."""
+    envelope_fields = {
+        "index",
+        "action_id",
+        "status",
+        "data",
+        "decision",
+        "execution",
+        "sanitize_fields",
+        "audit_event",
+    }
+    data = step.get("data")
+    if not isinstance(data, dict):
+        data = {key: value for key, value in step.items() if key not in envelope_fields}
+
+    return StepPublicResponse(
+        index=step["index"],
+        action_id=step["action_id"],
+        status=step["status"],
+        data=data,
+        decision=step.get("decision"),
+        execution=step.get("execution"),
+        sanitize_fields=step.get("sanitize_fields"),
+        audit_event=step.get("audit_event"),
+    )
+
+
 class RunStateResponse(BaseModel):
     run_id: str = Field(..., description="Unique run identifier", examples=["run_634a174c8449"])
-    status: RunStatus = Field(..., description="Current overall status of the run", examples=[RunStatus.RUNNING])
+    status: RunStatus = Field(
+        ..., description="Current overall status of the run", examples=[RunStatus.RUNNING]
+    )
     prompt: str = Field(..., description="Original prompt text", examples=["open example.com"])
     created_at: str = Field(..., description="ISO 8601 creation timestamp")
     steps: list[StepPublicResponse] = Field(default_factory=list, description="List of step states")
@@ -129,9 +166,15 @@ class RespondRequest(BaseModel):
 class RespondResponse(BaseModel):
     run_id: str = Field(..., description="Run identifier", examples=["run_634a174c8449"])
     step_index: int = Field(..., description="Step index that was responded to", examples=[0])
-    action: Literal["approve", "decline", "input"] = Field(..., description="Action delivered", examples=["approve"])
-    status: Literal["accepted"] = Field(default="accepted", description="Delivery status", examples=["accepted"])
+    action: Literal["approve", "decline", "input"] = Field(
+        ..., description="Action delivered", examples=["approve"]
+    )
+    status: Literal["accepted"] = Field(
+        default="accepted", description="Delivery status", examples=["accepted"]
+    )
     step_status: StepStatus | None = Field(default=None, description="Updated status of the step")
+
+
 @router.post(
     "/parse",
     response_model=ParseResponse,
@@ -181,7 +224,10 @@ async def parse_browser_action(request: ParseRequest) -> ParseResponse:
     summary="Execute Reactive Agent Run",
     description="Start a reactive agent run in the background for a natural-language instruction and return run tracking endpoints.",
 )
-async def execute_plan(request: ParseRequest) -> ExecuteResponse:
+async def execute_plan(
+    request: ParseRequest,
+    owner: OwnerContext = Depends(get_owner_context),
+) -> ExecuteResponse:
     """
     Start a **reactive agent run** for a natural-language instruction.
 
@@ -198,7 +244,10 @@ async def execute_plan(request: ParseRequest) -> ExecuteResponse:
     live run state with ``GET /api/v1/chat/execute/{run_id}``, or poll
     ``GET /api/v1/runs/{run_id}/actions`` for the audit trail.
     """
-    run = start_agent_run(request.prompt)
+    run = start_agent_run(
+        request.prompt,
+        metadata={"owner_id": owner.owner_id, "session_id": owner.session_id},
+    )
     return ExecuteResponse(
         run_id=run.run_id,
         status=run.status,
@@ -220,7 +269,10 @@ async def execute_plan(request: ParseRequest) -> ExecuteResponse:
         }
     },
 )
-async def stream_execute(request: ParseRequest) -> StreamingResponse:
+async def stream_execute(
+    request: ParseRequest,
+    owner: OwnerContext = Depends(get_owner_context),
+) -> StreamingResponse:
     """
     Run the reactive agent loop and **stream** every event as Server-Sent
     Events (SSE), like an AI chat:
@@ -233,7 +285,10 @@ async def stream_execute(request: ParseRequest) -> StreamingResponse:
     stays open with heartbeat pings; call
     ``POST /api/v1/chat/execute/{run_id}/respond`` to resume it live.
     """
-    run = start_agent_run(request.prompt)
+    run = start_agent_run(
+        request.prompt,
+        metadata={"owner_id": owner.owner_id, "session_id": owner.session_id},
+    )
     return StreamingResponse(
         _sse_generator(run),
         media_type="text/event-stream",
@@ -254,6 +309,7 @@ async def stream_execute(request: ParseRequest) -> StreamingResponse:
 )
 async def get_run_state(
     run_id: str = Path(..., description="Unique run identifier", examples=["run_634a174c8449"]),
+    owner: OwnerContext = Depends(get_owner_context),
 ) -> RunStateResponse:
     """
     Live state of a run: overall status and every step's status. Useful for
@@ -261,14 +317,14 @@ async def get_run_state(
     ``waiting_input`` before calling the respond endpoint.
     """
     run = run_registry.get(run_id)
-    if run is None:
+    if run is None or not _run_belongs_to_owner(run, owner):
         raise HTTPException(status_code=404, detail="run not found")
     return RunStateResponse(
         run_id=run.run_id,
         status=run.status,
         prompt=run.prompt,
         created_at=run.created_at.isoformat(),
-        steps=[StepPublicResponse(**s) for s in run.public_steps()],
+        steps=[_step_public_response(s) for s in run.public_steps()],
     )
 
 
@@ -285,6 +341,7 @@ async def get_run_state(
 async def respond_to_step(
     request: RespondRequest,
     run_id: str = Path(..., description="Unique run identifier", examples=["run_634a174c8449"]),
+    owner: OwnerContext = Depends(get_owner_context),
 ) -> RespondResponse:
     """
     Deliver a user response to a paused step:
@@ -297,7 +354,7 @@ async def respond_to_step(
     The run resumes immediately; the streaming client sees the next events.
     """
     run = run_registry.get(run_id)
-    if run is None:
+    if run is None or not _run_belongs_to_owner(run, owner):
         raise HTTPException(status_code=404, detail="run not found")
 
     try:
@@ -321,6 +378,16 @@ async def respond_to_step(
         status="accepted",
         step_status=step.status if step else None,
     )
+
+
+def _run_belongs_to_owner(run: RunSession, owner: OwnerContext) -> bool:
+    run_owner = str(run.metadata.get("owner_id") or "default")
+    if run_owner != owner.owner_id:
+        return False
+    if owner.session_id is not None:
+        return run.metadata.get("session_id") == owner.session_id
+    return run.metadata.get("session_id") is None
+
 
 # ── SSE plumbing ──────────────────────────────────────────────────
 

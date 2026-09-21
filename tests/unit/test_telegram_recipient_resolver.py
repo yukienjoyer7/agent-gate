@@ -44,6 +44,27 @@ class _MemoryContacts:
             and " ".join((contact.display_name or "").split()).lower() == normalized
         ]
 
+    async def get_connection(self, owner_id: str) -> TelegramContactIdentity | None:
+        return next(
+            (
+                contact
+                for contact in self.contacts.values()
+                if contact.owner_id == owner_id and contact.status == "connected"
+            ),
+            None,
+        )
+
+    async def find_by_chat_id(
+        self, chat_id: int, *, connected_only: bool = True
+    ) -> list[TelegramContactIdentity]:
+        return [
+            contact
+            for contact in self.contacts.values()
+            if contact.chat_id == chat_id
+            and contact.is_active
+            and (not connected_only or contact.status == "connected")
+        ]
+
 
 async def _add(
     store: _MemoryContacts,
@@ -123,4 +144,64 @@ async def test_invalid_at_username_is_rejected_without_guessing() -> None:
     resolution = await TelegramRecipientResolver(_MemoryContacts()).resolve("@Rafi Ahmad")
 
     assert resolution.status == RecipientResolutionStatus.INVALID
+    assert resolution.chat_id is None
+
+
+@pytest.mark.asyncio
+async def test_me_resolves_to_the_current_owners_connected_telegram_account() -> None:
+    store = _MemoryContacts()
+    await store.upsert(
+        chat_id=123456789,
+        chat_type="private",
+        username="rafiahmad",
+        first_name="Rafi",
+        last_name="Ahmad",
+        display_name="Rafi Ahmad",
+        owner_id="owner-a",
+        status="connected",
+    )
+
+    resolution = await TelegramRecipientResolver(store, owner_id="owner-a").resolve("saya")
+
+    assert resolution.status == RecipientResolutionStatus.RESOLVED
+    assert resolution.chat_id == 123456789
+
+
+@pytest.mark.asyncio
+async def test_me_does_not_resolve_an_observed_or_disconnected_contact() -> None:
+    store = _MemoryContacts()
+    await store.upsert(
+        chat_id=123456789,
+        chat_type="private",
+        username="rafiahmad",
+        first_name="Rafi",
+        last_name="Ahmad",
+        display_name="Rafi Ahmad",
+        owner_id="owner-a",
+        status="observed",
+    )
+
+    resolution = await TelegramRecipientResolver(store, owner_id="owner-a").resolve("me")
+
+    assert resolution.status == RecipientResolutionStatus.NOT_FOUND
+    assert resolution.chat_id is None
+
+
+@pytest.mark.asyncio
+async def test_owner_scoped_numeric_resolution_rejects_a_disconnected_chat_id() -> None:
+    store = _MemoryContacts()
+    store.contacts[123456789] = TelegramContactIdentity(
+        chat_id=123456789,
+        chat_type="private",
+        username="rafiahmad",
+        first_name="Rafi",
+        last_name="Ahmad",
+        display_name="Rafi Ahmad",
+        owner_id="owner-a",
+        status="disconnected",
+    )
+
+    resolution = await TelegramRecipientResolver(store, owner_id="owner-a").resolve("123456789")
+
+    assert resolution.status == RecipientResolutionStatus.NOT_FOUND
     assert resolution.chat_id is None

@@ -75,3 +75,47 @@ def test_run_action_endpoint_supports_github_repo_metadata(tmp_path, monkeypatch
     body = response.json()
     assert body["execution_status"] == "SUCCESS"
     assert body["execution_json"]["data"]["full_name"] == "octo/demo"
+
+
+def test_action_run_normalizes_nullable_target_and_summary(tmp_path, monkeypatch):
+    async def fake_get(self, path: str) -> dict:
+        assert path == "/repos/octo/demo"
+        return {
+            "id": 1,
+            "full_name": "octo/demo",
+            "private": False,
+            "default_branch": "main",
+            "html_url": "https://github.com/octo/demo",
+        }
+
+    monkeypatch.setenv("AUDIT_BACKEND", "jsonl")
+    monkeypatch.setenv("AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("TRACE_LOG_PATH", str(tmp_path / "traces.jsonl"))
+    monkeypatch.setattr(GitHubConnector, "_get", fake_get)
+    get_settings.cache_clear()
+    client = TestClient(app)
+
+    cases = (
+        ("target", "github"),
+        ("payload_summary", "octo/demo"),
+    )
+    for nullable_field, expected_target in cases:
+        proposal = {
+            "user_goal": "inspect repo metadata",
+            "action_type": "API_CALL",
+            "target_system": "github",
+            "target": "octo/demo",
+            "payload": {
+                "action": "repo_metadata",
+                "owner": "octo",
+                "repo": "demo",
+            },
+            nullable_field: None,
+        }
+        response = client.post("/api/v1/actions/run", json=proposal)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["request_json"]["target"] == expected_target
+        assert body["request_json"]["payload_summary"] == "action, owner, repo"
+        assert body["execution_status"] == "SUCCESS"

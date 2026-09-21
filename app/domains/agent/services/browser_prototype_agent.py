@@ -76,6 +76,8 @@ async def run_browser_prototype_agent(
     settle_ms: int = 0,
     run_id: str | None = None,
     action_id: str | None = None,
+    owner_id: str = "default",
+    session_id: str | None = None,
     skip_guardrail: bool = False,
     persist_session: bool | None = None,
     navigate: bool = True,
@@ -112,6 +114,8 @@ async def run_browser_prototype_agent(
         request_kwargs["action_id"] = action_id
     request = ActionRequest(
         **request_kwargs,
+        owner_id=owner_id,
+        session_id=session_id,
         source="api",
         domain="browser",
         action_type="BROWSER_PROTOTYPE_ACTION",

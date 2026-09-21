@@ -57,6 +57,8 @@ class ActionRequest(BaseModel):
     schema_version: Literal["0.1"] = SCHEMA_VERSION
     run_id: str = Field(default_factory=lambda: new_id("run"))
     action_id: str = Field(default_factory=lambda: new_id("act"))
+    owner_id: str = "default"
+    session_id: str | None = None
     source: str = "cli"
     domain: str = Field(default_factory=_default_domain)
     action_type: str

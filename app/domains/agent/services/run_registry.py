@@ -34,6 +34,10 @@ def _mask_execution(value: Any) -> Any:
         action_type = str(value.get("type") or value.get("action_type") or "").lower()
         masked: dict[str, Any] = {}
         for key, item in value.items():
+            if key == "chat_id":
+                # Telegram addresses are internal connector data. Keep them
+                # in audit/executor records, but never in public run state.
+                continue
             if (
                 key == "value"
                 and action_type in {"fill", "type"}
@@ -175,6 +179,33 @@ class RunRegistry:
     def get(self, run_id: str) -> RunSession | None:
         with self._lock:
             return self._sessions.get(run_id)
+
+    def remove_by_owner_id(self, owner_id: str) -> list[RunSession]:
+        """Remove and cancel all ephemeral run/chat state for an owner."""
+        with self._lock:
+            removed = [
+                run
+                for run in self._sessions.values()
+                if str(run.metadata.get("owner_id") or "default") == owner_id
+            ]
+            for run in removed:
+                self._sessions.pop(run.run_id, None)
+
+        for run in removed:
+            run.status = RunStatus.CANCELLED
+            run.publish(
+                {
+                    "type": "done",
+                    "data": {
+                        "run_id": run.run_id,
+                        "status": RunStatus.CANCELLED.value,
+                        "steps": run.public_steps(),
+                    },
+                }
+            )
+            if run.task is not None and not run.task.done():
+                run.task.cancel()
+        return removed
 
     def respond(
         self,

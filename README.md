@@ -35,6 +35,48 @@ Both share the same planner, guardrail, connectors, and approval semantics.
 
 Full index: [docs/index.md](docs/index.md).
 
+## Server development quickstart
+
+```bash
+# Configure the planner, connectors, database password, and guardrail.
+cp .env.example .env
+
+# Start host Ollama with the configured detector model, then start the stack.
+docker compose up -d --build
+curl http://localhost:8000/api/v1/health
+
+# Inspect or rerun migrations against the API container's database.
+docker compose exec -T api alembic current
+docker compose exec -T api alembic upgrade head
+docker compose exec -T api python -m scripts.check_database_connection
+```
+
+Compose runs migrations after PostgreSQL becomes healthy. It uses
+`postgres:5432/agentgate` by default; the host-oriented `DATABASE_URL` does not
+replace that connection. Set `DOCKER_DATABASE_URL` only when the container and
+its migrations should use another database. `DB_PASSWORD` configures the local
+PostgreSQL service and fallback URL, but changing it does not rewrite credentials
+inside an existing database volume.
+
+The API container reaches host Ollama through `host.docker.internal`. Override
+that endpoint with `DOCKER_OLLAMA_HOST`. On Linux, Ollama must listen on an
+interface reachable from Docker. The example detector timeout is deliberately
+long enough for CPU inference; measure a complete guarded request before lowering
+`AGENTGATE_LLM_DETECTOR_TIMEOUT`.
+
+After changing environment values used by the API, recreate the service because
+a plain restart retains the container's old environment:
+
+```bash
+docker compose up -d --force-recreate api
+```
+
+For host development, install `.[dev,server,browser,stripe]`, point
+`DATABASE_URL` at a reachable PostgreSQL instance, run `alembic upgrade head`,
+and then start `uvicorn app.main:app --reload`. See
+[deployment and operations](docs/deployment.md) for production checks and Ollama
+troubleshooting.
+
 ## The five decisions
 
 | Decision | Meaning |

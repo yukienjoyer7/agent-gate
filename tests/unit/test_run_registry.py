@@ -68,9 +68,7 @@ def test_public_step_masks_browser_form_values() -> None:
             "action_type": "BROWSER_TYPE",
             "payload": {"label": "CVC", "value": "123"},
         },
-        execution={
-            "data": {"action": {"type": "fill", "label": "CVC", "value": "123"}}
-        },
+        execution={"data": {"action": {"type": "fill", "label": "CVC", "value": "123"}}},
     )
 
     public = step.public()
@@ -78,6 +76,29 @@ def test_public_step_masks_browser_form_values() -> None:
     assert public["payload"]["value"] == "••••"
     assert public["execution"]["data"]["action"]["value"] == "••••"
     assert "123" not in str(public)
+
+
+def test_public_step_hides_internal_telegram_chat_id() -> None:
+    step = StepState(
+        index=0,
+        action_id="act_telegram",
+        data={
+            "action_type": "API_CALL",
+            "target_system": "telegram",
+            "resolved_recipient": {
+                "chat_id": 123456789,
+                "display_name": "Rafi Ahmad",
+                "username": "rafiahmad",
+            },
+        },
+        execution={"data": {"chat_id": 123456789, "message_id": 10}},
+    )
+
+    public = step.public()
+
+    assert "chat_id" not in public["resolved_recipient"]
+    assert "chat_id" not in public["execution"]["data"]
+    assert "123456789" not in str(public)
 
 
 @pytest.mark.asyncio

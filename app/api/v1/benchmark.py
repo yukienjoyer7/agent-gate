@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from app.api.audit_scope import event_belongs_to_owner
+from app.api.session_context import OwnerContext, get_owner_context
 from app.core.action_schema import ExecutionStatus
 from app.domains.audit.repositories import get_audit_repository
 
@@ -31,8 +33,14 @@ class BenchmarkSummaryResponse(BaseModel):
     summary="Get Benchmark Latency Summary",
     description="Return aggregate execution counts, average latency, and latest execution status across all recorded audit actions.",
 )
-async def benchmark_summary() -> BenchmarkSummaryResponse:
-    events = await get_audit_repository().list()
+async def benchmark_summary(
+    owner: OwnerContext = Depends(get_owner_context),
+) -> BenchmarkSummaryResponse:
+    events = [
+        event
+        for event in await get_audit_repository().list()
+        if event_belongs_to_owner(event, owner)
+    ]
     totals = [event.latency.get("total_ms", 0) for event in events]
     return BenchmarkSummaryResponse(
         action_count=len(events),

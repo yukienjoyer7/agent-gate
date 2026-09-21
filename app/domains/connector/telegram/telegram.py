@@ -75,6 +75,18 @@ class TelegramConnector(BaseConnector):
         self._api_base = api_base
         self._timeout = timeout
 
+    async def get_bot_username(self) -> str:
+        """Return the bot username from Bot API ``getMe`` without exposing its token."""
+        token = self._token if self._token is not None else get_settings().TELEGRAM_BOT_TOKEN
+        if not token:
+            raise TelegramAPIError("Telegram bot token is not configured", ConnectorErrorCode.AUTH)
+        data = await self._post("getMe", {}, token)
+        result = data.get("result")
+        username = result.get("username") if isinstance(result, dict) else None
+        if not isinstance(username, str) or not username.strip():
+            raise TelegramAPIError("Telegram bot username is missing", ConnectorErrorCode.UNKNOWN)
+        return username.strip().lstrip("@")
+
     async def execute(self, action: str, payload: dict[str, Any]) -> ExecutionResult:
         started = perf_counter()
         run_id = str(payload.get("run_id") or "")

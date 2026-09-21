@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import ipaddress
+import json
 import math
 import os
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
-
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_DETECTOR_MODEL = "qwen2.5:7b"
@@ -25,6 +24,54 @@ _LOCAL_CONTAINER_HOSTNAMES = frozenset({"host.docker.internal"})
 class LLMUnavailable(RuntimeError):
     """Raised when the required detector runtime or response is unusable."""
 
+    category = "unknown"
+
+
+class LLMConnectionError(LLMUnavailable):
+    """The detector could not connect to the configured Ollama endpoint."""
+
+    category = "connection_error"
+
+
+class LLMTimeoutError(LLMUnavailable):
+    """Ollama did not complete the detector request before its deadline."""
+
+    category = "timeout"
+
+
+class LLMHTTPError(LLMUnavailable):
+    """Ollama returned an unsuccessful HTTP response."""
+
+    category = "http_error"
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+        super().__init__(f"Ollama returned HTTP {status}")
+
+
+class LLMInvalidJSONError(LLMUnavailable):
+    """Ollama returned a response whose JSON content could not be parsed."""
+
+    category = "invalid_json"
+
+
+class LLMInvalidResponseEnvelopeError(LLMUnavailable):
+    """Ollama returned a JSON envelope without assistant message content."""
+
+    category = "invalid_response_envelope"
+
+
+class LLMResponseSchemaError(LLMUnavailable):
+    """The model output does not satisfy the required detector schema."""
+
+    category = "schema_validation"
+
+
+class LLMContradictoryOutputError(LLMUnavailable):
+    """The model output is structurally valid but internally inconsistent."""
+
+    category = "contradictory_output"
+
 
 def resolve_model(model: str | None = None) -> str:
     value = model or os.environ.get("AGENTGATE_LLM_DETECTOR_MODEL", DEFAULT_DETECTOR_MODEL)
@@ -37,7 +84,7 @@ def resolve_host(host: str | None = None) -> str:
     value = (host or os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)).rstrip("/")
     try:
         parsed = urllib.parse.urlsplit(value)
-        parsed.port
+        _ = parsed.port
     except ValueError as exc:
         raise LLMUnavailable("OLLAMA_HOST is not a valid URL") from exc
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -75,6 +122,7 @@ def chat_json(
     host: str | None = None,
     timeout: float | None = None,
     extra_options: dict[str, Any] | None = None,
+    response_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return one validated JSON object from Ollama or raise ``LLMUnavailable``."""
     resolved_model = resolve_model(model)
@@ -87,7 +135,10 @@ def chat_json(
     body = {
         "model": resolved_model,
         "stream": False,
-        "format": "json",
+        # A JSON Schema activates Ollama Structured Outputs.  The older "json"
+        # mode only asks the model for syntactic JSON and cannot ensure the six
+        # detector sections, enums, or integer fields are present.
+        "format": response_schema if response_schema is not None else "json",
         "options": options,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -106,27 +157,37 @@ def chat_json(
             raw_response = response.read(_MAX_RESPONSE_BYTES + 1)
         if len(raw_response) > _MAX_RESPONSE_BYTES:
             raise ValueError("response exceeded the configured size limit")
-        envelope = json.loads(raw_response.decode("utf-8"))
+        try:
+            envelope = json.loads(raw_response.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise LLMInvalidJSONError("Ollama response was not valid JSON") from exc
         if not isinstance(envelope, dict):
-            raise TypeError("Ollama response must be an object")
+            raise LLMInvalidResponseEnvelopeError("Ollama response must be an object")
         message = envelope.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
-            raise TypeError("Ollama response is missing message.content")
-        result = json.loads(message["content"])
+            raise LLMInvalidResponseEnvelopeError("Ollama response is missing message.content")
+        try:
+            result = json.loads(message["content"])
+        except json.JSONDecodeError as exc:
+            raise LLMInvalidJSONError("Ollama message.content was not valid JSON") from exc
         if not isinstance(result, dict):
-            raise TypeError("detector response must be a JSON object")
+            raise LLMInvalidResponseEnvelopeError("detector response must be a JSON object")
         return result
     except LLMUnavailable:
         raise
+    except urllib.error.HTTPError as exc:
+        raise LLMHTTPError(exc.code) from exc
+    except TimeoutError as exc:
+        raise LLMTimeoutError("Ollama detector request timed out") from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise LLMTimeoutError("Ollama detector request timed out") from exc
+        raise LLMConnectionError("Could not reach the configured Ollama service") from exc
+    except OSError as exc:
+        raise LLMConnectionError("Could not reach the configured Ollama service") from exc
     except (
-        urllib.error.URLError,
-        OSError,
-        TimeoutError,
         UnicodeDecodeError,
-        json.JSONDecodeError,
         TypeError,
         ValueError,
     ) as exc:
-        raise LLMUnavailable(
-            "LLM detector is unavailable or returned an invalid response"
-        ) from exc
+        raise LLMInvalidResponseEnvelopeError("Ollama returned an invalid response") from exc

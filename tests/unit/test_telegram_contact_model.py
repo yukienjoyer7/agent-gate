@@ -16,6 +16,11 @@ def test_telegram_contact_model_has_no_credential_column() -> None:
         "is_active",
         "first_seen_at",
         "last_seen_at",
+        "owner_id",
+        "telegram_user_id",
+        "status",
+        "connected_at",
+        "updated_at",
     ]
     assert "telegram_contacts" in Base.metadata.tables
     assert not any("token" in column.lower() for column in columns)

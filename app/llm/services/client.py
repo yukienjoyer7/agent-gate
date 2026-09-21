@@ -15,6 +15,7 @@ OpenAI-shaped response:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -27,6 +28,7 @@ from app.runtime.context import current_runtime
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_VERSION = "2023-06-01"
+_TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
 
 # Gemini function-call ID -> Gemini interaction ID.
 # This lets the existing AgentGate tool loop continue working without
@@ -94,11 +96,7 @@ async def _post_openai(
     url = settings.LLM_URL
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(settings.LLM_TIMEOUT)) as client:
-        response = await client.post(
-            url,
-            json=payload,
-            headers=_openai_headers(),
-        )
+        response = await _post_openai_with_retries(client, url, payload, settings)
 
         error_text = getattr(response, "text", "") or ""
 
@@ -118,17 +116,48 @@ async def _post_openai(
 
             fallback["response_format"] = {"type": "json_object"}
 
-            response = await client.post(
-                url,
-                json=fallback,
-                headers=_openai_headers(),
-            )
+            response = await _post_openai_with_retries(client, url, fallback, settings)
 
             response.raise_for_status()
             return response.json(), True
 
         response.raise_for_status()
         return response.json(), False
+
+
+async def _post_openai_with_retries(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict[str, Any],
+    settings: Any,
+) -> httpx.Response:
+    """Retry only transient OpenAI-compatible provider failures.
+
+    Planner requests are safe to retry because they do not execute connector
+    actions. Authentication, validation, and malformed-request responses are
+    returned immediately so a configuration error is not hidden.
+    """
+    attempts = max(0, int(getattr(settings, "LLM_RETRY_ATTEMPTS", 2)))
+    for attempt in range(attempts + 1):
+        try:
+            response = await client.post(url, json=payload, headers=_openai_headers())
+        except httpx.TransportError:
+            if attempt >= attempts:
+                raise
+            await asyncio.sleep(min(2.0, 0.5 * (2**attempt)))
+            continue
+
+        status_code = getattr(response, "status_code", None)
+        if status_code not in _TRANSIENT_HTTP_STATUSES or attempt >= attempts:
+            return response
+
+        logger.warning(
+            "Transient LLM provider response; retrying",
+            extra={"status_code": status_code, "attempt": attempt + 1},
+        )
+        await asyncio.sleep(min(2.0, 0.5 * (2**attempt)))
+
+    raise RuntimeError("LLM provider retry loop exhausted")
 
 
 # ── Anthropic Messages API ────────────────────────────────────────

@@ -8,6 +8,7 @@ happen".
 
 from __future__ import annotations
 
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
@@ -19,6 +20,8 @@ from .detectors.llm_client import LLMUnavailable
 from .policy import PolicyContext, PolicyEngine
 from .sanitizer import sanitize
 from .schemas import ActionRequest, Decision, DecisionResponse, RiskLevel
+
+logger = logging.getLogger(__name__)
 
 _RANK = {
     Decision.ALLOW: 0,
@@ -33,8 +36,12 @@ _RANK = {
 # computed from a guess.
 _LOW_CONFIDENCE_THRESHOLD = 0.75
 _CONFIDENCE_GATED_TYPES = {
-    "API_CALL", "BROWSER_SUBMIT", "BROWSER_CLICK", "BROWSER_TYPE",
-    "FILE_WRITE", "FILE_DELETE",
+    "API_CALL",
+    "BROWSER_SUBMIT",
+    "BROWSER_CLICK",
+    "BROWSER_TYPE",
+    "FILE_WRITE",
+    "FILE_DELETE",
 }
 
 _NEXT_STEP = {
@@ -104,9 +111,7 @@ class DecisionEngine:
         detector_error: str | None = None
 
         if self.detectors:
-            outcomes: list[tuple[Finding | None, str | None]] = [(None, None)] * len(
-                self.detectors
-            )
+            outcomes: list[tuple[Finding | None, str | None]] = [(None, None)] * len(self.detectors)
             workers = max(1, min(len(self.detectors), 32))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 future_to_index = {
@@ -229,10 +234,34 @@ class DecisionEngine:
         started = time.perf_counter()
         try:
             return det.scan(req), None
-        except LLMUnavailable:
-            return None, (
-                "LLM detector is unavailable. Ensure Ollama is running and the "
-                "configured model is installed."
+        except LLMUnavailable as exc:
+            category = getattr(exc, "category", "unknown")
+            # Do not include ActionRequest fields or raw model content.  Exception
+            # messages are constructed by the detector client/validators from
+            # categories, field names, and bounded numeric/status metadata only.
+            logger.warning(
+                "guardrail_detector_failure category=%s detector=%s model=%s reason=%s",
+                category,
+                det.name,
+                str(getattr(det, "model", "configured"))[:100],
+                str(exc)[:300],
+                extra={
+                    "guardrail_detector_category": category,
+                    "guardrail_detector": det.name,
+                    "guardrail_detector_model": str(getattr(det, "model", "configured"))[:100],
+                },
+            )
+            messages = {
+                "connection_error": "Guardrail LLM detector could not reach the configured Ollama service.",
+                "timeout": "Guardrail LLM detector timed out.",
+                "http_error": "Guardrail LLM detector received an HTTP error from Ollama.",
+                "invalid_json": "Guardrail LLM detector returned an invalid structured response.",
+                "invalid_response_envelope": "Guardrail LLM detector returned an invalid structured response.",
+                "schema_validation": "Guardrail LLM detector returned an invalid structured response.",
+                "contradictory_output": "Guardrail LLM detector returned an invalid structured response.",
+            }
+            return None, messages.get(
+                category, "Guardrail LLM detector could not complete evaluation."
             )
         except Exception:
             return None, f"LLM detector {det.name!r} failed; action held for review."

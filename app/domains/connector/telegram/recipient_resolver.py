@@ -67,8 +67,11 @@ class RecipientResolution:
 class TelegramRecipientResolver:
     """Resolve exact, already-known Telegram identities without fuzzy guesses."""
 
-    def __init__(self, contacts: TelegramContactStore | None = None) -> None:
+    def __init__(
+        self, contacts: TelegramContactStore | None = None, owner_id: str | None = None
+    ) -> None:
         self._contacts = contacts or TelegramContactRepository()
+        self._owner_id = owner_id
 
     async def resolve(self, reference: object) -> RecipientResolution:
         if isinstance(reference, bool) or reference is None:
@@ -77,10 +80,33 @@ class TelegramRecipientResolver:
         if not raw:
             return RecipientResolution(RecipientResolutionStatus.INVALID, raw)
 
+        if raw.casefold() in {"me", "myself", "my telegram", "saya", "saya sendiri"}:
+            get_connection = getattr(self._contacts, "get_connection", None)
+            if self._owner_id and get_connection is not None:
+                contact = await get_connection(self._owner_id)
+                if contact is not None:
+                    return RecipientResolution(
+                        RecipientResolutionStatus.RESOLVED, raw, contact=contact
+                    )
+            return RecipientResolution(RecipientResolutionStatus.NOT_FOUND, raw)
+
         chat_id = parse_numeric_chat_id(raw)
         if chat_id is not None:
-            # An explicitly supplied numeric Telegram ID is a valid connector
-            # address even when the bot has not yet learned a display profile.
+            # In an owner-scoped runtime, numeric addresses must still be
+            # registered active connections. This prevents a disconnected
+            # account's old chat ID from remaining silently usable.
+            find_by_chat_id = getattr(self._contacts, "find_by_chat_id", None)
+            if self._owner_id and find_by_chat_id is not None:
+                try:
+                    try:
+                        matches = await find_by_chat_id(chat_id, connected_only=True)
+                    except TypeError:
+                        matches = await find_by_chat_id(chat_id)
+                except SQLAlchemyError:
+                    return RecipientResolution(RecipientResolutionStatus.UNAVAILABLE, raw)
+                return self._matches_result(raw, matches)
+            # Preserve explicit numeric-ID compatibility for injected stores
+            # that predate the connected-contact lookup.
             return RecipientResolution(
                 RecipientResolutionStatus.RESOLVED,
                 raw,
@@ -99,7 +125,7 @@ class TelegramRecipientResolver:
             if not is_valid_username(username):
                 return RecipientResolution(RecipientResolutionStatus.INVALID, raw)
             try:
-                matches = await self._contacts.find_by_username(username)
+                matches = await self._find_by_username(username)
             except SQLAlchemyError:
                 return RecipientResolution(RecipientResolutionStatus.UNAVAILABLE, raw)
             return self._matches_result(raw, matches)
@@ -107,7 +133,7 @@ class TelegramRecipientResolver:
         # Follow the documented precedence: exact username first, then exact
         # normalized display name. Neither branch ever chooses a first match.
         try:
-            username_matches = await self._contacts.find_by_username(raw)
+            username_matches = await self._find_by_username(raw)
         except SQLAlchemyError:
             return RecipientResolution(RecipientResolutionStatus.UNAVAILABLE, raw)
         if username_matches:
@@ -117,10 +143,23 @@ class TelegramRecipientResolver:
         if not display_name:
             return RecipientResolution(RecipientResolutionStatus.INVALID, raw)
         try:
-            display_matches = await self._contacts.find_by_display_name(display_name)
+            display_matches = await self._find_by_display_name(display_name)
         except SQLAlchemyError:
             return RecipientResolution(RecipientResolutionStatus.UNAVAILABLE, raw)
         return self._matches_result(raw, display_matches)
+
+    async def _find_by_username(self, username: str):
+        try:
+            return await self._contacts.find_by_username(username, connected_only=True)
+        except TypeError:
+            # Test and plugin stores from the original API accepted one arg.
+            return await self._contacts.find_by_username(username)
+
+    async def _find_by_display_name(self, display_name: str):
+        try:
+            return await self._contacts.find_by_display_name(display_name, connected_only=True)
+        except TypeError:
+            return await self._contacts.find_by_display_name(display_name)
 
     @staticmethod
     def _matches_result(

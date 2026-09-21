@@ -179,6 +179,39 @@ def test_post_chat_openai_uses_bearer_and_keeps_payload(monkeypatch) -> None:
     assert data["choices"][0]["message"]["content"] == '{"plan": []}'
 
 
+def test_post_chat_openai_retries_transient_provider_failures(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    async def fake_post(self, url, json=None, headers=None):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            request = httpx.Request("POST", url)
+            return httpx.Response(500, request=request, json={"error": {"message": "temporary"}})
+        return _Resp({"choices": [{"message": {"role": "assistant", "content": "{}"}}]})
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setenv("LLM_TYPE", "openai")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_URL", "https://provider.test/v1/chat/completions")
+    monkeypatch.setenv("LLM_RETRY_ATTEMPTS", "2")
+    get_settings.cache_clear()
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    monkeypatch.setattr(client.asyncio, "sleep", fake_sleep)
+    try:
+        data, tools_rejected = asyncio.run(client.post_chat({"model": "m", "messages": []}))
+    finally:
+        get_settings.cache_clear()
+
+    assert calls == 3
+    assert sleeps == [0.5, 1.0]
+    assert not tools_rejected
+    assert data["choices"][0]["message"]["content"] == "{}"
+
+
 class _Resp:
     """Minimal stand-in for an httpx.Response."""
 

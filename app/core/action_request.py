@@ -40,11 +40,16 @@ def browser_action_needs_payment_approval(
 def build_action_request(proposal: dict[str, Any]) -> ActionRequest:
     payload = proposal.get("payload") or {}
     target_system = proposal["target_system"]
+    target = proposal.get("target")
+    if target is None:
+        target = target_system
     if target_system == "calendar" and payload.get("action") == "create_event":
         payload = normalize_create_event_payload(payload)
     domain = proposal.get("domain") or get_settings().DEFAULT_DOMAIN
     risk_hint = proposal.get("risk_hint", "unknown")
-    payload_summary = proposal.get("payload_summary", summarize_payload(payload))
+    payload_summary = proposal.get("payload_summary")
+    if payload_summary is None:
+        payload_summary = summarize_payload(payload)
     if target_system == "stripe":
         # Financial policy is authoritative at the ActionRequest boundary.
         # This prevents a direct API caller or planner from downgrading a
@@ -74,11 +79,13 @@ def build_action_request(proposal: dict[str, Any]) -> ActionRequest:
     return ActionRequest(
         run_id=proposal.get("run_id") or new_id("run"),
         action_id=proposal.get("action_id") or new_id("act"),
+        owner_id=str(proposal.get("owner_id") or "default"),
+        session_id=proposal.get("session_id"),
         source=proposal.get("source", "cli"),
         domain=domain,
         action_type=proposal["action_type"],
         target_system=target_system,
-        target=proposal.get("target", target_system),
+        target=target,
         recipient_reference=proposal.get("recipient_reference"),
         resolved_recipient=proposal.get("resolved_recipient"),
         user_goal=proposal.get("user_goal", ""),

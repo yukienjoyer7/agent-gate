@@ -9,15 +9,45 @@ approval flow, executor routing, and audit trail as `/api/v1/chat`.
 1. Create a bot with BotFather in Telegram.
 2. Copy the bot token into `.env` as `TELEGRAM_BOT_TOKEN`.
 3. Generate a long random webhook secret and set it as `TELEGRAM_WEBHOOK_SECRET`.
-4. Keep both values out of source control.
+4. Optionally set `TELEGRAM_BOT_USERNAME`; when empty, AgentGate obtains it
+   through Telegram's `getMe` endpoint when creating a connection link.
+5. Keep all secret values out of source control.
 
 Required environment:
 
 ```bash
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_WEBHOOK_SECRET=
+TELEGRAM_BOT_USERNAME=
 TELEGRAM_API_BASE=https://api.telegram.org
 ```
+
+When these values change while using Docker Compose, recreate the API
+container so its `env_file` is reloaded: run
+`docker compose up -d --force-recreate api`. A plain
+`docker compose restart api` restarts the old container environment.
+
+## End-user account linking
+
+The Web UI's **Connect Telegram** button calls `POST /api/v1/telegram/connect`
+and opens a short-lived link in the form
+`https://t.me/<bot_username>?start=<one-time-payload>`. The user opens the bot
+and presses **Start**. The existing webhook validates the Telegram secret,
+accepts only a private `/start <payload>`, and binds the Telegram identity to
+the current AgentGate owner. The payload is random, hashed at rest, expires
+after ten minutes, and can be consumed only once.
+
+The UI polls `GET /api/v1/telegram/connection` and displays only connection
+state, username, and display name. It never displays `chat_id`; users never
+need to discover or enter one. `DELETE /api/v1/telegram/connection` disconnects
+the current owner. A plain `/start` without a payload remains a normal inbound
+bot message and does not create an account link.
+
+This repository's demo has no authentication middleware yet. Until one is
+introduced, the current owner is represented by the optional
+`X-AgentGate-Owner` header (default `default`) on connection and web chat
+requests. Production deployments must replace that bridge with the
+authenticated principal; the Telegram token itself never becomes an owner ID.
 
 ## Local Development
 
@@ -94,8 +124,9 @@ Telegram contact registry and replaces it internally with a numeric `chat_id`.
 The approval view shows the resolved display name and username when known; the
 connector receives only the numeric chat ID and never guesses from a name.
 
-The planner may use `chat_id` directly only when the user explicitly supplied
-a numeric Telegram chat ID:
+For backwards-compatible planner inputs, a numeric `chat_id` is accepted only
+when the user explicitly supplied it and it still belongs to an active,
+connected contact in the registry:
 
 ```json
 {"action": "send_message", "chat_id": 123456789, "text": "deployment completed"}
@@ -107,9 +138,9 @@ recipient reference and still requires registry resolution.
 ## Recipient Registration And Resolution
 
 Whenever the inbound webhook receives a valid Telegram `message.chat`, the
-channel upserts that chat's ID, type, username, first/last name, display name,
-and first/last-seen timestamps. This happens before any AgentGate run is
-started, so a recipient pressing `/start` is enough to become addressable.
+channel upserts that chat's profile. A user becomes an addressable recipient
+after completing Connect Telegram; an observed but unlinked contact is not used
+for outbound delivery.
 Duplicate webhook updates remain deduplicated and the database has a unique
 constraint on `chat_id`.
 
@@ -117,13 +148,14 @@ Resolution is exact and case-insensitive where appropriate:
 
 - a numeric chat ID supplied explicitly;
 - an exact `@username` or username;
-- an exact normalized display name.
+- an exact normalized display name;
+- `me`, `myself`, or `saya` for the current owner's connected account.
 
 AgentGate does not fuzzy-match names or select the first duplicate. An unknown
 recipient enters the existing `ASK_USER` flow and no Telegram API request is
 made. For an ambiguous display name, AgentGate lists the matching
-display-name/username choices and asks for an exact `@username` or numeric chat
-ID. The user must clarify before normal `external_send` approval begins.
+display-name/username choices and asks for an exact `@username`. The user must
+clarify before normal `external_send` approval begins.
 
 Telegram's Bot API cannot globally search Telegram users or DM arbitrary names.
 The bot can normally resolve a person only after an inbound interaction such as
@@ -148,16 +180,17 @@ AgentGate.
 
 ## Manual End-to-End Check
 
-1. Rafi opens the AgentGate bot and presses `/start`.
-2. Confirm the webhook accepts the update; this records Rafi's chat identity.
-3. In AgentGate Web Chat, enter `kirim pesan telegram "halo" ke Rafi Ahmad`.
-4. Confirm the plan has `recipient: "Rafi Ahmad"`, `target_system: telegram`,
+1. In the AgentGate Web UI, click **Connect Telegram**.
+2. Open the generated Telegram link and press **Start**.
+3. Confirm the UI changes to **Telegram Connected** and shows only the username.
+4. In AgentGate Web Chat, enter `kirim pesan telegram "halo" ke Rafi Ahmad`.
+5. Confirm the plan has `recipient: "Rafi Ahmad"`, `target_system: telegram`,
    and `risk_hint: external_send`.
-5. Confirm AgentGate resolves the recipient and displays `Rafi Ahmad
+6. Confirm AgentGate resolves the recipient and displays `Rafi Ahmad
    (@rafiahmad)` (when that username is registered) in the approval context.
-6. Before approval, verify no `sendMessage` request has been made.
-7. Approve the action. The connector then sends the already-resolved numeric
-   chat ID, Telegram returns HTTP 200, Rafi receives `halo`, and the audit trail
+7. Before approval, verify no `sendMessage` request has been made.
+8. Approve the action. The connector then sends the already-resolved internal
+   address, Telegram returns HTTP 200, Rafi receives `halo`, and the audit trail
    records the reference, resolved identity, NEED_APPROVAL/approval transition,
    and execution result.
 

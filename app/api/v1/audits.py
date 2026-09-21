@@ -1,7 +1,9 @@
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.api.audit_scope import event_belongs_to_owner
+from app.api.session_context import OwnerContext, get_owner_context
 from app.core.audit_schema import AuditEvent
 from app.domains.audit.repositories import get_audit_repository
 
@@ -20,10 +22,11 @@ async def list_audits(
         description="Optional run ID to filter audit events",
         examples=["run_634a174c8449"],
     ),
+    owner: OwnerContext = Depends(get_owner_context),
 ) -> list[AuditEvent]:
     repo = get_audit_repository()
     events = await repo.by_run(run_id) if run_id else await repo.list()
-    return events
+    return [event for event in events if event_belongs_to_owner(event, owner)]
 
 
 @router.get(
@@ -32,6 +35,9 @@ async def list_audits(
     summary="Get Latest Audit Event",
     description="Retrieve the most recently written audit event from the repository, or an empty object if no events exist.",
 )
-async def latest_audit() -> AuditEvent | dict[str, Any]:
-    event = await get_audit_repository().latest()
+async def latest_audit(
+    owner: OwnerContext = Depends(get_owner_context),
+) -> AuditEvent | dict[str, Any]:
+    events = await get_audit_repository().list()
+    event = next((item for item in reversed(events) if event_belongs_to_owner(item, owner)), None)
     return event if event else {}
