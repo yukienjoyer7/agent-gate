@@ -8,12 +8,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.schemas import new_id
+from app.database.models.browser_session import BrowserSession
 from app.database.models.telegram_contact import TelegramContact
 from app.database.models.telegram_link_token import TelegramLinkToken
+from app.database.models.telegram_session_contact import (
+    TelegramContactInvite,
+    TelegramSessionContact,
+)
 
 
 def normalize_display_name(value: str | None) -> str | None:
@@ -50,6 +56,17 @@ class TelegramContactIdentity:
     telegram_user_id: int | None = None
     status: str = "observed"
     connected_at: datetime | None = None
+    alias: str | None = None
+
+
+@dataclass(frozen=True)
+class TelegramSessionContactIdentity:
+    contact_id: str
+    session_id: str
+    alias: str
+    username: str | None
+    display_name: str | None
+    created_at: datetime | None = None
 
 
 class TelegramContactStore(Protocol):
@@ -66,22 +83,52 @@ class TelegramContactStore(Protocol):
     ) -> TelegramContactIdentity: ...
 
     async def find_by_username(
-        self, username: str, *, connected_only: bool = True
+        self,
+        username: str,
+        *,
+        connected_only: bool = True,
+        owner_id: str | None = None,
     ) -> Sequence[TelegramContactIdentity]: ...
 
     async def find_by_display_name(
-        self, display_name: str, *, connected_only: bool = True
+        self,
+        display_name: str,
+        *,
+        connected_only: bool = True,
+        owner_id: str | None = None,
     ) -> Sequence[TelegramContactIdentity]: ...
 
     async def find_by_chat_id(
-        self, chat_id: int, *, connected_only: bool = True
+        self,
+        chat_id: int,
+        *,
+        connected_only: bool = True,
+        owner_id: str | None = None,
     ) -> Sequence[TelegramContactIdentity]: ...
 
     async def get_connection(self, owner_id: str) -> TelegramContactIdentity | None: ...
 
     async def disconnect(self, owner_id: str) -> bool: ...
 
+    async def delete_connection(self, owner_id: str) -> bool: ...
+
     async def revoke_link_tokens(self, owner_id: str) -> int: ...
+
+    async def create_contact_invite(
+        self, session_id: str, alias: str, *, token_hash: str, expires_at: datetime
+    ) -> None: ...
+
+    async def consume_contact_invite(
+        self, **kwargs
+    ) -> tuple[bool, str | None, TelegramContactIdentity | None]: ...
+
+    async def list_session_contacts(
+        self, session_id: str
+    ) -> Sequence[TelegramSessionContactIdentity]: ...
+
+    async def delete_session_contact(self, session_id: str, contact_id: str) -> bool: ...
+
+    async def delete_session_contact_data(self, session_id: str) -> None: ...
 
     async def create_link_token(
         self, owner_id: str, *, token_hash: str, expires_at: datetime
@@ -183,7 +230,11 @@ class TelegramContactRepository:
         )
 
     async def find_by_username(
-        self, username: str, *, connected_only: bool = True
+        self,
+        username: str,
+        *,
+        connected_only: bool = True,
+        owner_id: str | None = None,
     ) -> Sequence[TelegramContactIdentity]:
         normalized = _normalize_username(username)
         if not normalized:
@@ -195,11 +246,27 @@ class TelegramContactRepository:
             ]
             if connected_only:
                 filters.append(TelegramContact.status == "connected")
+            if owner_id is not None:
+                filters.append(TelegramContact.owner_id == owner_id)
             result = await session.execute(
                 select(TelegramContact).where(*filters).order_by(TelegramContact.id)
             )
             rows = result.scalars().all()
-        return [_identity_from_model(row) for row in rows]
+            session_rows = []
+            if owner_id is not None:
+                session_result = await session.execute(
+                    select(TelegramSessionContact).where(
+                        TelegramSessionContact.session_id == owner_id,
+                        func.lower(TelegramSessionContact.username) == normalized,
+                    )
+                )
+                session_rows = session_result.scalars().all()
+        return _dedupe_identities(
+            [
+                *(_identity_from_model(row) for row in rows),
+                *(_identity_from_session_contact(row) for row in session_rows),
+            ]
+        )
 
     async def get_connection(self, owner_id: str) -> TelegramContactIdentity | None:
         async with self._scope() as session:
@@ -214,15 +281,35 @@ class TelegramContactRepository:
         return _identity_from_model(row) if row else None
 
     async def find_by_chat_id(
-        self, chat_id: int, *, connected_only: bool = True
+        self,
+        chat_id: int,
+        *,
+        connected_only: bool = True,
+        owner_id: str | None = None,
     ) -> Sequence[TelegramContactIdentity]:
         async with self._scope() as session:
             filters = [TelegramContact.chat_id == chat_id, TelegramContact.is_active.is_(True)]
             if connected_only:
                 filters.append(TelegramContact.status == "connected")
+            if owner_id is not None:
+                filters.append(TelegramContact.owner_id == owner_id)
             result = await session.execute(select(TelegramContact).where(*filters))
             rows = result.scalars().all()
-        return [_identity_from_model(row) for row in rows]
+            session_rows = []
+            if owner_id is not None:
+                session_result = await session.execute(
+                    select(TelegramSessionContact).where(
+                        TelegramSessionContact.session_id == owner_id,
+                        TelegramSessionContact.chat_id == chat_id,
+                    )
+                )
+                session_rows = session_result.scalars().all()
+        return _dedupe_identities(
+            [
+                *(_identity_from_model(row) for row in rows),
+                *(_identity_from_session_contact(row) for row in session_rows),
+            ]
+        )
 
     async def disconnect(self, owner_id: str) -> bool:
         async with self._scope() as session:
@@ -243,6 +330,15 @@ class TelegramContactRepository:
             await session.commit()
             return True
 
+    async def delete_connection(self, owner_id: str) -> bool:
+        """Hard-delete the Telegram identity attached to an ending demo session."""
+        async with self._scope() as session:
+            result = await session.execute(
+                delete(TelegramContact).where(TelegramContact.owner_id == owner_id)
+            )
+            await session.commit()
+            return bool(result.rowcount)
+
     async def revoke_link_tokens(self, owner_id: str) -> int:
         """Invalidate unused Telegram links issued to an ended browser session."""
         async with self._scope() as session:
@@ -256,6 +352,149 @@ class TelegramContactRepository:
             )
             await session.commit()
             return max(result.rowcount or 0, 0)
+
+    async def create_contact_invite(
+        self, session_id: str, alias: str, *, token_hash: str, expires_at: datetime
+    ) -> None:
+        async with self._scope() as session:
+            session.add(
+                TelegramContactInvite(
+                    token_hash=token_hash,
+                    session_id=session_id,
+                    alias=normalize_display_name(alias) or alias,
+                    expires_at=expires_at,
+                )
+            )
+            await session.commit()
+
+    async def consume_contact_invite(
+        self,
+        *,
+        token_hash: str,
+        chat_id: int,
+        telegram_user_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+        display_name: str | None,
+        now: datetime,
+    ) -> tuple[bool, str | None, TelegramContactIdentity | None]:
+        """Consume one invitation and add its Telegram identity to that active session."""
+        async with self._scope() as session:
+            invite = await session.scalar(
+                select(TelegramContactInvite)
+                .where(TelegramContactInvite.token_hash == token_hash)
+                .with_for_update()
+            )
+            if invite is None or invite.used_at is not None or invite.expires_at <= now:
+                await session.rollback()
+                return False, "invalid", None
+            browser_session = await session.scalar(
+                select(BrowserSession)
+                .where(BrowserSession.session_id == invite.session_id)
+                .with_for_update()
+            )
+            if browser_session is None or browser_session.ended_at is not None:
+                await session.rollback()
+                return False, "session_ended", None
+            own_connection = await session.scalar(
+                select(TelegramContact).where(
+                    TelegramContact.owner_id == invite.session_id,
+                    TelegramContact.status == "connected",
+                )
+            )
+            if own_connection is not None and (
+                own_connection.chat_id == chat_id
+                or own_connection.telegram_user_id == telegram_user_id
+            ):
+                await session.rollback()
+                return False, "self_contact", None
+
+            row = await session.scalar(
+                select(TelegramSessionContact)
+                .where(
+                    TelegramSessionContact.session_id == invite.session_id,
+                    TelegramSessionContact.chat_id == chat_id,
+                )
+                .with_for_update()
+            )
+            cleaned_username = _normalize_username(username)
+            cleaned_first = _clean_optional(first_name)
+            cleaned_last = _clean_optional(last_name)
+            cleaned_display = normalize_display_name(display_name)
+            if row is None:
+                row = TelegramSessionContact(
+                    contact_id=new_id("tgc"),
+                    session_id=invite.session_id,
+                    chat_id=chat_id,
+                    telegram_user_id=telegram_user_id,
+                    alias=invite.alias,
+                )
+                session.add(row)
+            row.telegram_user_id = telegram_user_id
+            row.username = cleaned_username
+            row.first_name = cleaned_first
+            row.last_name = cleaned_last
+            row.display_name = cleaned_display
+            row.alias = invite.alias
+            row.updated_at = now
+            invite.used_at = now
+            await session.commit()
+            return True, None, _identity_from_session_contact(row)
+
+    async def list_session_contacts(
+        self, session_id: str
+    ) -> Sequence[TelegramSessionContactIdentity]:
+        async with self._scope() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(TelegramSessionContact)
+                        .where(TelegramSessionContact.session_id == session_id)
+                        .order_by(
+                            func.lower(TelegramSessionContact.alias),
+                            TelegramSessionContact.contact_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [
+            TelegramSessionContactIdentity(
+                contact_id=row.contact_id,
+                session_id=row.session_id,
+                alias=row.alias,
+                username=row.username,
+                display_name=row.display_name,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
+
+    async def delete_session_contact(self, session_id: str, contact_id: str) -> bool:
+        async with self._scope() as session:
+            result = await session.execute(
+                delete(TelegramSessionContact).where(
+                    TelegramSessionContact.session_id == session_id,
+                    TelegramSessionContact.contact_id == contact_id,
+                )
+            )
+            await session.commit()
+            return bool(result.rowcount)
+
+    async def delete_session_contact_data(self, session_id: str) -> None:
+        """Hard-delete temporary recipients and invitations when a session ends."""
+        async with self._scope() as session:
+            await session.execute(
+                delete(TelegramContactInvite).where(TelegramContactInvite.session_id == session_id)
+            )
+            await session.execute(
+                delete(TelegramSessionContact).where(
+                    TelegramSessionContact.session_id == session_id
+                )
+            )
+            await session.commit()
 
     async def create_link_token(
         self, owner_id: str, *, token_hash: str, expires_at: datetime
@@ -373,7 +612,11 @@ class TelegramContactRepository:
             return True, token.owner_id, _identity_from_model(contact)
 
     async def find_by_display_name(
-        self, display_name: str, *, connected_only: bool = True
+        self,
+        display_name: str,
+        *,
+        connected_only: bool = True,
+        owner_id: str | None = None,
     ) -> Sequence[TelegramContactIdentity]:
         normalized = normalize_display_name(display_name)
         if not normalized:
@@ -385,11 +628,30 @@ class TelegramContactRepository:
             ]
             if connected_only:
                 filters.append(TelegramContact.status == "connected")
+            if owner_id is not None:
+                filters.append(TelegramContact.owner_id == owner_id)
             result = await session.execute(
                 select(TelegramContact).where(*filters).order_by(TelegramContact.id)
             )
             rows = result.scalars().all()
-        return [_identity_from_model(row) for row in rows]
+            session_rows = []
+            if owner_id is not None:
+                session_result = await session.execute(
+                    select(TelegramSessionContact).where(
+                        TelegramSessionContact.session_id == owner_id,
+                        or_(
+                            func.lower(TelegramSessionContact.alias) == normalized.lower(),
+                            func.lower(TelegramSessionContact.display_name) == normalized.lower(),
+                        ),
+                    )
+                )
+                session_rows = session_result.scalars().all()
+        return _dedupe_identities(
+            [
+                *(_identity_from_model(row) for row in rows),
+                *(_identity_from_session_contact(row) for row in session_rows),
+            ]
+        )
 
 
 def _identity_from_model(contact: TelegramContact) -> TelegramContactIdentity:
@@ -408,6 +670,34 @@ def _identity_from_model(contact: TelegramContact) -> TelegramContactIdentity:
         status=contact.status,
         connected_at=contact.connected_at,
     )
+
+
+def _identity_from_session_contact(contact: TelegramSessionContact) -> TelegramContactIdentity:
+    return TelegramContactIdentity(
+        chat_id=contact.chat_id,
+        chat_type="private",
+        username=contact.username,
+        first_name=contact.first_name,
+        last_name=contact.last_name,
+        display_name=contact.alias or contact.display_name,
+        is_active=True,
+        first_seen_at=contact.created_at,
+        last_seen_at=contact.updated_at,
+        owner_id=contact.session_id,
+        telegram_user_id=contact.telegram_user_id,
+        status="connected",
+        connected_at=contact.created_at,
+        alias=contact.alias,
+    )
+
+
+def _dedupe_identities(
+    identities: Sequence[TelegramContactIdentity],
+) -> list[TelegramContactIdentity]:
+    by_chat_id: dict[int, TelegramContactIdentity] = {}
+    for identity in identities:
+        by_chat_id[identity.chat_id] = identity
+    return list(by_chat_id.values())
 
 
 def _clean_optional(value: str | None) -> str | None:

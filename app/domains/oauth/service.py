@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import secrets
+from collections.abc import Awaitable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 import httpx
 
 from app.config.settings import get_settings
-from app.domains.oauth.repository import OAuthTokenRepository, StoredToken
+from app.domains.oauth.repository import OAuthStateRepository, OAuthTokenRepository, StoredToken
 from app.runtime.context import TokenStore, current_runtime
 
 
@@ -59,16 +62,20 @@ def _config(provider: str) -> ProviderConfig:
     raise ValueError(f"unknown OAuth provider: {provider}")
 
 
-# ponytail: in-memory, single-process state store -- fine for a local dev
-# prototype where authorize -> callback happens within seconds; move to
-# Redis/DB if this runs behind multiple workers.
-_pending_states: dict[str, str] = {}
+class OAuthStateStore(Protocol):
+    def create(self, state_hash: str, provider: str, expires_at: datetime) -> Awaitable[None]: ...
+
+    def consume(self, state_hash: str, provider: str, now: datetime) -> Awaitable[bool]: ...
 
 
-def build_authorize_url(provider: str) -> str:
+async def build_authorize_url(provider: str, state_repo: OAuthStateStore | None = None) -> str:
     config = _config(provider)
     state = secrets.token_urlsafe(16)
-    _pending_states[state] = provider
+    await (state_repo or OAuthStateRepository()).create(
+        _hash_state(state),
+        provider,
+        datetime.now(UTC) + timedelta(seconds=get_settings().OAUTH_STATE_TTL_SEC),
+    )
     params = {
         "client_id": config.client_id,
         "redirect_uri": config.redirect_uri,
@@ -86,8 +93,12 @@ async def exchange_code(
     state: str,
     repo: TokenStore | None = None,
     client: httpx.AsyncClient | None = None,
+    state_repo: OAuthStateStore | None = None,
 ) -> StoredToken:
-    if _pending_states.pop(state, None) != provider:
+    valid_state = await (state_repo or OAuthStateRepository()).consume(
+        _hash_state(state), provider, datetime.now(UTC)
+    )
+    if not valid_state:
         raise ValueError("invalid or expired OAuth state")
 
     config = _config(provider)
@@ -99,6 +110,10 @@ async def exchange_code(
     )
 
 
+def _hash_state(state: str) -> str:
+    return hashlib.sha256(state.encode("utf-8")).hexdigest()
+
+
 async def get_access_token(
     provider: str,
     repo: TokenStore | None = None,
@@ -108,7 +123,7 @@ async def get_access_token(
     token = await repo.get(provider)
     if token is None:
         return _fallback_token(provider)
-    if token.expires_at and token.expires_at <= datetime.now(timezone.utc):
+    if token.expires_at and token.expires_at <= datetime.now(UTC):
         token = await _refresh(provider, token, repo, client)
     return token.access_token
 
@@ -164,7 +179,7 @@ async def _request_token(
 
     expires_at = None
     if payload.get("expires_in"):
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(payload["expires_in"]))
+        expires_at = datetime.now(UTC) + timedelta(seconds=int(payload["expires_in"]))
 
     return await (repo or _token_repository()).save(
         provider=provider,

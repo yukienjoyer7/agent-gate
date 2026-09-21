@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from app.api.session_context import OwnerContext, require_browser_session
 from app.api.v1 import telegram as telegram_router
+from app.domains.connector.telegram.contacts import TelegramSessionContactIdentity
 from app.main import app
 
 
@@ -16,6 +18,16 @@ class _ApiTelegramService:
             display_name="Rafi Ahmad",
             chat_id=987654321,
         )
+        self.contacts = [
+            TelegramSessionContactIdentity(
+                contact_id="tgc_abc",
+                session_id="session-a",
+                alias="Arsyad",
+                username="arsyad",
+                display_name="Muhammad Arsyad",
+                created_at=datetime.now(UTC),
+            )
+        ]
 
     async def create_connection(self, owner_id: str):
         assert owner_id == "owner-a"
@@ -30,6 +42,24 @@ class _ApiTelegramService:
     async def disconnect(self, owner_id: str):
         assert owner_id == "owner-a"
         self.connection = None
+        return True
+
+    async def create_contact_invitation(self, owner_id: str, alias: str):
+        assert owner_id == "session-a"
+        assert alias == "Arsyad"
+        return "https://t.me/agentgate_bot?start=contact_secret", datetime.now(UTC) + timedelta(
+            minutes=10
+        )
+
+    async def list_session_contacts(self, owner_id: str):
+        assert owner_id == "session-a"
+        return self.contacts
+
+    async def delete_session_contact(self, owner_id: str, contact_id: str):
+        assert owner_id == "session-a"
+        if contact_id != "tgc_abc":
+            return False
+        self.contacts = []
         return True
 
 
@@ -64,3 +94,26 @@ def test_disconnect_api_clears_connection_without_exposing_internal_address(monk
     assert response.status_code == 200
     assert response.json() == {"connected": False, "username": None, "display_name": None}
     assert "chat_id" not in response.text
+
+
+def test_session_contact_api_hides_internal_telegram_addresses(monkeypatch) -> None:
+    service = _ApiTelegramService()
+    monkeypatch.setattr(telegram_router, "telegram_service", service)
+    app.dependency_overrides[require_browser_session] = lambda: OwnerContext(
+        owner_id="session-a", session_id="session-a"
+    )
+    client = TestClient(app)
+    try:
+        invite = client.post("/api/v1/telegram/contact-invitations", json={"alias": "Arsyad"})
+        contacts = client.get("/api/v1/telegram/contacts")
+        deleted = client.delete("/api/v1/telegram/contacts/tgc_abc")
+
+        assert invite.status_code == 200
+        assert invite.json()["invite_url"].endswith("contact_secret")
+        assert contacts.status_code == 200
+        assert contacts.json()[0]["alias"] == "Arsyad"
+        assert "chat_id" not in contacts.text
+        assert "telegram_user_id" not in contacts.text
+        assert deleted.json() == {"deleted": True}
+    finally:
+        app.dependency_overrides.pop(require_browser_session, None)

@@ -27,21 +27,37 @@ class _MemoryContacts:
         self.contacts[identity.chat_id] = identity
         return identity
 
-    async def find_by_username(self, username: str) -> list[TelegramContactIdentity]:
+    async def find_by_username(
+        self,
+        username: str,
+        *,
+        connected_only: bool = True,
+        owner_id: str | None = None,
+    ) -> list[TelegramContactIdentity]:
         normalized = username.strip().lstrip("@").lower()
         return [
             contact
             for contact in self.contacts.values()
             if contact.is_active and (contact.username or "").lower() == normalized
+            and (not connected_only or contact.status == "connected")
+            and (owner_id is None or contact.owner_id == owner_id)
         ]
 
-    async def find_by_display_name(self, display_name: str) -> list[TelegramContactIdentity]:
+    async def find_by_display_name(
+        self,
+        display_name: str,
+        *,
+        connected_only: bool = True,
+        owner_id: str | None = None,
+    ) -> list[TelegramContactIdentity]:
         normalized = " ".join(display_name.split()).lower()
         return [
             contact
             for contact in self.contacts.values()
             if contact.is_active
             and " ".join((contact.display_name or "").split()).lower() == normalized
+            and (not connected_only or contact.status == "connected")
+            and (owner_id is None or contact.owner_id == owner_id)
         ]
 
     async def get_connection(self, owner_id: str) -> TelegramContactIdentity | None:
@@ -55,7 +71,11 @@ class _MemoryContacts:
         )
 
     async def find_by_chat_id(
-        self, chat_id: int, *, connected_only: bool = True
+        self,
+        chat_id: int,
+        *,
+        connected_only: bool = True,
+        owner_id: str | None = None,
     ) -> list[TelegramContactIdentity]:
         return [
             contact
@@ -63,6 +83,7 @@ class _MemoryContacts:
             if contact.chat_id == chat_id
             and contact.is_active
             and (not connected_only or contact.status == "connected")
+            and (owner_id is None or contact.owner_id == owner_id)
         ]
 
 
@@ -72,6 +93,8 @@ async def _add(
     *,
     username: str | None = "rafiahmad",
     display_name: str | None = "Rafi Ahmad",
+    owner_id: str | None = None,
+    status: str = "connected",
 ) -> TelegramContactIdentity:
     first, _, last = (display_name or "").partition(" ")
     return await store.upsert(
@@ -81,6 +104,8 @@ async def _add(
         first_name=first or None,
         last_name=last or None,
         display_name=display_name,
+        owner_id=owner_id,
+        status=status,
     )
 
 
@@ -205,3 +230,49 @@ async def test_owner_scoped_numeric_resolution_rejects_a_disconnected_chat_id() 
 
     assert resolution.status == RecipientResolutionStatus.NOT_FOUND
     assert resolution.chat_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference", ["ownerb", "Owner B", "222"])
+async def test_owner_scoped_resolution_rejects_another_owners_contact(reference: str) -> None:
+    store = _MemoryContacts()
+    await _add(
+        store,
+        111,
+        username="ownera",
+        display_name="Owner A",
+        owner_id="owner-a",
+        status="connected",
+    )
+    await _add(
+        store,
+        222,
+        username="ownerb",
+        display_name="Owner B",
+        owner_id="owner-b",
+        status="connected",
+    )
+
+    resolution = await TelegramRecipientResolver(store, owner_id="owner-a").resolve(reference)
+
+    assert resolution.status == RecipientResolutionStatus.NOT_FOUND
+    assert resolution.chat_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference", ["ownera", "Owner A", "111"])
+async def test_owner_scoped_resolution_accepts_the_current_owners_contact(reference: str) -> None:
+    store = _MemoryContacts()
+    await _add(
+        store,
+        111,
+        username="ownera",
+        display_name="Owner A",
+        owner_id="owner-a",
+        status="connected",
+    )
+
+    resolution = await TelegramRecipientResolver(store, owner_id="owner-a").resolve(reference)
+
+    assert resolution.status == RecipientResolutionStatus.RESOLVED
+    assert resolution.chat_id == 111

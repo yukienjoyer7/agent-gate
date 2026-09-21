@@ -251,6 +251,12 @@
   }
   .btn-connect:hover { border-color: var(--blue); color: var(--text); }
   .btn-connect.connected { border-color: var(--green); color: var(--green); }
+  .integ-actions { display: flex; gap: 6px; align-items: center; }
+  .integ-actions .btn-connect { padding-inline: 9px; }
+  .integ-card.telegram-card { grid-column: 1 / -1; flex-wrap: wrap; }
+  .telegram-card .integ-actions { width: 100%; }
+  .telegram-card .btn-invite { flex: 1; border-color: var(--blue); color: var(--blue); font-weight: 700; }
+  .telegram-contact-summary { margin-top: 4px; color: var(--muted); font-size: 11.5px; }
 </style>
 </head>
 <body>
@@ -957,10 +963,15 @@ function renderIntegrations(statusMap) {
         <button class="btn-connect ${connected ? "connected" : ""}"
                 onclick="openAuth('${p.path}')">${connected ? "✓" : "Hubungkan"}</button>`;
     } else if (p.type === "telegram") {
+      card.classList.add("telegram-card");
       const st = statusMap[p.key] || {};
       const connected = !!st.connected;
       const waiting = !connected && telegramConnecting;
       const display = st.username ? `@${st.username}` : (st.display_name || "Connected");
+      const contacts = Array.isArray(st.contacts) ? st.contacts : [];
+      const contactText = contacts.length
+        ? `${contacts.length} kontak: ${contacts.map(c => c.alias).join(", ")}`
+        : "Belum ada kontak. Klik + Undang kontak di bawah.";
       card.innerHTML = `
         <div class="integ-icon">${p.icon}</div>
         <div class="integ-info">
@@ -969,11 +980,15 @@ function renderIntegrations(statusMap) {
             <span class="dot ${connected ? "on" : (waiting ? "waiting" : "off")}"></span>
             ${connected ? escapeHtml(display) : (waiting ? "Menunggu Telegram…" : "Belum terhubung")}
           </div>
+          ${connected ? `<div class="telegram-contact-summary">${escapeHtml(contactText)}</div>` : ""}
         </div>
-        <button class="btn-connect ${connected ? "connected" : ""}"
-                ${waiting ? "disabled" : `onclick="${connected ? "disconnectTelegram()" : "connectTelegram()"}"`}>
-          ${connected ? "Disconnect" : (waiting ? "Waiting…" : "Connect Telegram")}
-        </button>`;
+        <div class="integ-actions">
+          ${connected ? `<button class="btn-connect btn-invite" onclick="createTelegramContactInvitation()">＋ Undang kontak Telegram</button>` : ""}
+          <button class="btn-connect ${connected ? "connected" : ""}"
+                  ${waiting ? "disabled" : `onclick="${connected ? "disconnectTelegram()" : "connectTelegram()"}"`}>
+            ${connected ? "Putuskan" : (waiting ? "Menunggu…" : "Hubungkan Telegram")}
+          </button>
+        </div>`;
     } else {
       // Native backend service connectors
       card.innerHTML = `
@@ -1005,6 +1020,12 @@ async function fetchIntegrationStatus() {
       headers: sessionHeaders(),
     });
     if (resp.ok) statusMap.telegram = await resp.json();
+    if (resp.ok && statusMap.telegram.connected) {
+      const contactsResp = await fetch(base + "/api/v1/telegram/contacts", {
+        headers: sessionHeaders(),
+      });
+      statusMap.telegram.contacts = contactsResp.ok ? await contactsResp.json() : [];
+    }
   } catch { /* Keep the card in its safe disconnected state. */ }
   renderIntegrations(statusMap);
   return statusMap;
@@ -1012,12 +1033,39 @@ async function fetchIntegrationStatus() {
 
 let telegramPollTimer = null;
 let telegramPollStopTimer = null;
+let telegramContactPollTimer = null;
+let telegramContactPollStopTimer = null;
+
+function reserveTelegramWindow() {
+  // Opening must happen synchronously inside the click handler. Supplying the
+  // `noopener` feature makes window.open return null in modern browsers even
+  // though it creates the tab, leaving an about:blank tab that cannot be
+  // navigated after the asynchronous API request.
+  const popup = window.open("", "_blank");
+  if (!popup) return null;
+  try {
+    popup.document.title = "Membuka Telegram…";
+    popup.document.body.textContent = "Menyiapkan tautan Telegram…";
+  } catch { /* The placeholder may already be outside this page's origin. */ }
+  return popup;
+}
+
+function navigateToTelegram(popup, connectUrl) {
+  if (!popup || popup.closed) {
+    // Popup blockers may reject the reserved tab. Navigating the current tab
+    // still lets the user continue instead of silently leaving about:blank.
+    window.location.assign(connectUrl);
+    return;
+  }
+  popup.location.replace(connectUrl);
+  try { popup.opener = null; } catch { /* The Telegram navigation is already queued. */ }
+}
 
 async function connectTelegram() {
   const base = apiBase();
   // Reserve the tab synchronously from the button click so popup blockers do
   // not prevent opening the deep link after the API request completes.
-  const telegramWindow = window.open("about:blank", "_blank", "noopener");
+  const telegramWindow = reserveTelegramWindow();
   telegramConnecting = true;
   await fetchIntegrationStatus();
   try {
@@ -1030,15 +1078,11 @@ async function connectTelegram() {
       if (telegramWindow) telegramWindow.close();
       telegramConnecting = false;
       await fetchIntegrationStatus();
-      flash("Telegram bağlantısı başlatılamadı.");
+      flash("Koneksi Telegram tidak dapat dimulai.");
       return;
     }
-    if (telegramWindow) {
-      telegramWindow.location.href = body.connect_url;
-    } else {
-      window.open(body.connect_url, "_blank", "noopener");
-    }
-    flash("Telegram açıldı. Botta Start'a bastıktan sonra bağlantı güncellenecek…");
+    navigateToTelegram(telegramWindow, body.connect_url);
+    flash("Telegram dibuka. Setelah menekan Start pada bot, status koneksi akan diperbarui…");
     clearInterval(telegramPollTimer);
     clearTimeout(telegramPollStopTimer);
     telegramPollTimer = setInterval(async () => {
@@ -1048,20 +1092,20 @@ async function connectTelegram() {
         clearInterval(telegramPollTimer);
         clearTimeout(telegramPollStopTimer);
         renderIntegrations(current);
-        flash("Telegram başarıyla bağlandı.");
+        flash("Telegram berhasil terhubung. Klik + Undang kontak Telegram untuk menambahkan penerima.");
       }
     }, 2000);
     telegramPollStopTimer = setTimeout(async () => {
       clearInterval(telegramPollTimer);
       telegramConnecting = false;
       await fetchIntegrationStatus();
-      flash("Telegram bağlantısı zaman aşımına uğradı. Yeniden deneyin.");
+      flash("Waktu koneksi Telegram habis. Silakan coba lagi.");
     }, 10 * 60 * 1000);
   } catch {
     if (telegramWindow) telegramWindow.close();
     telegramConnecting = false;
     await fetchIntegrationStatus();
-    flash("Telegram bağlantısı başlatılamadı.");
+    flash("Koneksi Telegram tidak dapat dimulai.");
   }
 }
 
@@ -1070,16 +1114,61 @@ async function disconnectTelegram() {
   telegramConnecting = false;
   clearInterval(telegramPollTimer);
   clearTimeout(telegramPollStopTimer);
+  clearInterval(telegramContactPollTimer);
+  clearTimeout(telegramContactPollStopTimer);
   try {
     const resp = await fetch(base + "/api/v1/telegram/connection", {
       method: "DELETE",
       headers: sessionHeaders(),
     });
     if (!resp.ok) throw new Error("disconnect failed");
-    flash("Telegram bağlantısı kesildi.");
+    flash("Koneksi Telegram diputus.");
     await fetchIntegrationStatus();
   } catch {
-    flash("Telegram bağlantısı kesilemedi.");
+    flash("Koneksi Telegram tidak dapat diputus.");
+  }
+}
+
+async function createTelegramContactInvitation() {
+  const alias = window.prompt("Nama atau alias kontak Telegram yang akan diundang:", "");
+  if (!alias || !alias.trim()) return;
+  try {
+    const resp = await fetch(apiBase() + "/api/v1/telegram/contact-invitations", {
+      method: "POST",
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ alias: alias.trim() }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok || !body.invite_url) throw new Error(body.detail || "invitation failed");
+
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(body.invite_url);
+      copied = true;
+    } catch { /* Clipboard may be unavailable outside a secure browser context. */ }
+    if (copied) {
+      flash(`Tautan undangan untuk ${alias.trim()} disalin. Kirim tautan itu ke penerima.`);
+    } else {
+      window.prompt("Salin dan kirim tautan ini ke penerima Telegram:", body.invite_url);
+      flash(`Tautan undangan untuk ${alias.trim()} telah dibuat.`);
+    }
+
+    clearInterval(telegramContactPollTimer);
+    clearTimeout(telegramContactPollStopTimer);
+    telegramContactPollTimer = setInterval(async () => {
+      const current = await fetchIntegrationStatus();
+      const contacts = current.telegram?.contacts || [];
+      if (contacts.some(contact => contact.alias.toLocaleLowerCase() === alias.trim().toLocaleLowerCase())) {
+        clearInterval(telegramContactPollTimer);
+        clearTimeout(telegramContactPollStopTimer);
+        flash(`${alias.trim()} sudah terdaftar sebagai kontak sesi.`);
+      }
+    }, 2000);
+    telegramContactPollStopTimer = setTimeout(() => {
+      clearInterval(telegramContactPollTimer);
+    }, 10 * 60 * 1000);
+  } catch (error) {
+    flash(`Undangan kontak tidak dapat dibuat: ${error.message}`);
   }
 }
 
@@ -1110,6 +1199,8 @@ initializeBrowserSession().then(() => {
 });
 window.addEventListener("pagehide", () => {
   clearInterval(sessionHeartbeatTimer);
+  clearInterval(telegramPollTimer);
+  clearInterval(telegramContactPollTimer);
   browserSessionReady = false;
   endBrowserSession(browserSessionId, "pagehide", true);
 });

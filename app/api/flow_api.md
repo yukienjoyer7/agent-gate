@@ -10,13 +10,13 @@ Dokumen ini menjelaskan urutan penggunaan API, hubungan antar-endpoint, data pen
 - Base URL server: `https://laplace-agentgate.bccdev.id`.
 - Prefix API: `/api/v1`. Seluruh path pada tabel dan contoh menggunakan prefix ini, kecuali `/`.
 
-**Status verifikasi server:** OpenAPI aktif pada 21 September 2026 memuat 27 operasi pada 26 path. Tiga endpoint sesi browser dan migrasi `0006` sudah aktif. Berkas implementasi untuk polling, normalisasi action, callback Telegram, dan sesi browser pada proses API sama dengan checkout ini.
+**Status verifikasi server:** OpenAPI aktif pada 21 September 2026 memuat 30 operasi pada 29 path. Tiga endpoint sesi browser, kontak Telegram per sesi, state OAuth persisten, serta migrasi `0008` sudah aktif. Berkas implementasi untuk polling, normalisasi action, callback Telegram, OAuth, dan sesi browser pada proses API sama dengan checkout ini.
 
 Pengujian runtime yang menjadi dasar dokumen:
 
 | Flow | Hasil yang diamati |
 |---|---|
-| Polling run dengan step | `GET /chat/execute/{run_id}` mengembalikan 200 ketika `running` dan `done`; setiap item memakai bentuk `steps[].data` yang sesuai response model |
+| Polling run dengan step | `GET /chat/execute/{run_id}` mengembalikan 200 ketika `running` dan `done`; setiap item memakai bentuk `steps[].data` yang sesuai response model. Serializer aktif belum meneruskan nilai `sanitize_fields` dan `audit_event`, sehingga kedua field itu bernilai `null` |
 | Action nullable | `target: null` dan `payload_summary: null` pada `/actions/run` sama-sama mengembalikan 200 dan dinormalisasi sebelum audit |
 | OAuth | Authorize GitHub, Gmail, dan Calendar memakai callback publik HTTPS; koneksi Calendar dan pembuatan acara berhasil diuji melalui server |
 | Guardrail | Backend aktif `agentgate` memakai detector Qwen; run Calendar menghasilkan `NEED_APPROVAL` tanpa `evaluation_error`, sedangkan run lama pernah memakai fallback setelah detector timeout |
@@ -36,15 +36,17 @@ Pengujian tersebut belum mencakup pertukaran OAuth dan action nyata GitHub/Gmail
 | `audit_id` | Identitas catatan audit | `AuditEvent` | Referensi catatan; belum ada endpoint detail berdasarkan `audit_id` |
 | `provider` | Provider OAuth | `github`, `gmail`, atau `calendar` | Authorize, callback, serta pemilihan konektor |
 | `X-AgentGate-Owner` | Label owner legacy; bukan autentikasi | Konteks aplikasi pemanggil lama; default literal `default` bila tidak ada header sesi/owner | Mulai run chat dan mengelola resource dalam lingkup legacy |
-| `X-AgentGate-Session` | Token acak yang diterbitkan API untuk satu tab halaman demo | `POST /api/v1/sessions` | Membatasi chat, audit, run, approval, benchmark, action, dan koneksi Telegram pada sesi aktif |
+| `X-AgentGate-Session` | Token acak yang diterbitkan API untuk satu tab halaman demo | `POST /api/v1/sessions` | Membatasi chat, audit, run, approval, benchmark, action, koneksi Telegram, dan resolusi penerima Telegram pada sesi aktif |
 
 ### Sesi browser aktif
 
 Halaman demo meminta sesi baru saat dibuka. ID disimpan di `sessionStorage` agar refresh dapat mengakhiri sesi lama lalu membuat ID baru; tombol Reset juga mengakhiri sesi dan menghapus state chat/run aktif. Saat tab ditutup, halaman mencoba mengirim `pagehide` cleanup. Jika browser tidak mengirim cleanup, server mengakhiri sesi setelah 30 menit tanpa aktivitas. Satu tab adalah satu lingkup sesi.
 
-API menyimpan `session_id`, waktu pembuatan, aktivitas terakhir, waktu berakhir, dan alasan berakhir pada tabel `browser_sessions`. Audit action tetap immutable dan menyimpan `owner_id`/`session_id`; mengakhiri sesi menghapus run/chat yang masih di registry, mencabut tautan Telegram yang belum dipakai, dan memutus koneksi Telegram milik sesi, tetapi mempertahankan catatan audit serta baris riwayat sesi.
+API menyimpan `session_id`, waktu pembuatan, aktivitas terakhir, waktu berakhir, dan alasan berakhir pada tabel `browser_sessions`. Audit action tetap immutable dan menyimpan `owner_id`/`session_id`; mengakhiri sesi menghapus run/chat yang masih di registry, undangan dan kontak Telegram sementara, mencabut tautan Telegram yang belum dipakai, dan memutus koneksi Telegram milik sesi, tetapi mempertahankan catatan audit serta baris riwayat sesi.
 
-`X-AgentGate-Session` adalah ID bearer acak untuk isolasi konteks demo, bukan autentikasi pengguna. Siapa pun yang memperoleh ID tersebut dapat bertindak dalam sesi selama masih aktif. Sesi membatasi data aplikasi yang memakai owner ini; token OAuth GitHub/Gmail/Calendar masih berupa konfigurasi global dan belum diisolasi per sesi.
+`X-AgentGate-Session` adalah ID bearer acak untuk isolasi konteks demo, bukan autentikasi pengguna. Siapa pun yang memperoleh ID tersebut dapat bertindak dalam sesi selama masih aktif. Sesi membatasi data aplikasi yang memakai owner ini; token OAuth GitHub/Gmail/Calendar disimpan secara persisten di database sebagai satu record global per provider dan belum diisolasi per sesi. OAuth client ID, client secret, redirect URI, dan fallback token tertentu tetap berasal dari konfigurasi environment.
+
+`POST /api/v1/sessions/end` tidak memakai header sesi. Body `session_id` menjadi bukti yang diperlukan untuk mengakhiri sesi tersebut. Endpoint menerima JSON biasa atau string JSON berjenis `text/plain` dari `sendBeacon`; `reason` hanya dapat bernilai `pagehide`, `refresh`, `reset`, atau `replaced`. Response `{"ended":false}` dengan HTTP 200 berarti ID berbentuk valid tetapi sesi tidak ditemukan atau sudah berakhir. Body atau ID yang tidak sesuai schema menghasilkan 422.
 
 Satu run dapat memiliki banyak step/action. Audit memuat `run_id` dan `action_id` sehingga hasil eksekusi dapat ditelusuri kembali. Endpoint riwayat menghitung **catatan audit**, sehingga `action_count` tidak selalu sama dengan jumlah step rencana yang terlihat saat run masih berjalan.
 
@@ -72,7 +74,7 @@ Diagram memakai path ringkas; tambahkan `/api/v1` dan ganti `run_id`/`action_id`
 
 ## 3. Inventaris seluruh endpoint
 
-Kontrak server aktif memiliki **27 operasi pada 26 path**, terdiri dari 14 GET, 12 POST, dan 1 DELETE. Tidak ada PUT atau PATCH.
+Kontrak server aktif memiliki **30 operasi pada 29 path**, terdiri dari 15 GET, 13 POST, dan 2 DELETE. Tidak ada PUT atau PATCH.
 
 | Method | Path | Input utama | Output dan hubungan berikutnya |
 |---|---|---|---|
@@ -83,14 +85,14 @@ Kontrak server aktif memiliki **27 operasi pada 26 path**, terdiri dari 14 GET, 
 | POST | `/api/v1/chat/execute/stream` | JSON `prompt`; `X-AgentGate-Session` atau owner legacy opsional | Membuat run dan mengirim SSE; lanjut respond dengan konteks yang sama bila perlu |
 | POST | `/api/v1/sessions` | Tidak ada | Membuat sesi browser baru dan menyimpan catatan lifecycle di database |
 | POST | `/api/v1/sessions/heartbeat` | Header `X-AgentGate-Session` | Memastikan sesi masih aktif dan memperbarui aktivitas |
-| POST | `/api/v1/sessions/end` | JSON `session_id`, `reason` | Mengakhiri sesi; dipakai Reset, refresh, dan cleanup `pagehide` |
+| POST | `/api/v1/sessions/end` | JSON atau `text/plain` berisi JSON `session_id`, `reason`; tanpa header sesi | `{"ended":true|false}`; dipakai Reset, refresh, dan cleanup `pagehide` |
 | GET | `/api/v1/chat/execute/{run_id}` | Path `run_id`; konteks owner/sesi yang sama dengan pembuat run | Status run dan step; konteks lain mendapat 404 |
 | POST | `/api/v1/chat/execute/{run_id}/respond` | Path `run_id`; konteks yang sama; JSON `step_index`, `action`, input opsional | Menerima jawaban hanya jika run berada dalam lingkup pemanggil |
 | POST | `/api/v1/actions/run` | Proposal action terstruktur; header sesi opsional | `AuditEvent` dalam lingkup sesi; lanjut GET action/audit/riwayat |
 | POST | `/api/v1/actions/prototype/browser` | URL dan spesifikasi browser action; header sesi opsional | `AuditEvent` dalam lingkup sesi |
 | GET | `/api/v1/actions/{action_id}` | Path `action_id`; header sesi opsional | Detail action milik sesi; 404 jika berbeda lingkup |
 | GET | `/api/v1/runs` | Header sesi opsional | Ringkasan run berdasarkan audit milik sesi |
-| GET | `/api/v1/runs/{run_id}/actions` | Path `run_id`; header sesi opsional | Audit run milik sesi; hasil sesi lain disembunyikan |
+| GET | `/api/v1/runs/{run_id}/actions` | Path `run_id`; header sesi opsional | Audit run yang terlihat dalam lingkup pemanggil; run tidak ada, belum memiliki audit, atau berbeda scope menghasilkan `200 []` |
 | GET | `/api/v1/audits` | Query `run_id`, header sesi opsional | Audit dalam lingkup sesi |
 | GET | `/api/v1/audits/latest` | Header sesi opsional | Audit terakhir dalam lingkup sesi atau `{}` |
 | GET | `/api/v1/approvals` | Header sesi opsional | Audit approval yang masih pending dalam lingkup sesi |
@@ -101,10 +103,13 @@ Kontrak server aktif memiliki **27 operasi pada 26 path**, terdiri dari 14 GET, 
 | POST | `/api/v1/telegram/connect` | Header sesi atau owner legacy opsional; tanpa body | `connect_url`, `expires_at`; buka tautan Telegram |
 | GET | `/api/v1/telegram/connection` | Header sesi atau owner legacy opsional | `connected`, `username`, `display_name` dalam lingkup owner |
 | DELETE | `/api/v1/telegram/connection` | Header sesi atau owner legacy opsional | Status koneksi setelah disconnect |
+| POST | `/api/v1/telegram/contact-invitations` | Header sesi aktif; JSON `alias` | Tautan undangan sekali pakai dan waktu kedaluwarsa; mensyaratkan koneksi Telegram sesi |
+| GET | `/api/v1/telegram/contacts` | Header sesi aktif | Daftar kontak sementara sesi tanpa `chat_id` atau Telegram user ID |
+| DELETE | `/api/v1/telegram/contacts/{contact_id}` | Header sesi aktif; path `contact_id` | Menghapus kontak hanya dari sesi pemanggil |
 | POST | `/api/v1/telegram/webhook` | JSON Telegram update dan secret header | Penerimaan update, kemungkinan `run_id`/keputusan |
 | POST | `/api/v1/stripe/webhook` | Raw body Stripe event dan signature header | `processed`/`duplicate`, `event_id`, `event_type` |
 
-Operasi bisnis menggunakan POST untuk memulai proses atau memberi respons. GET umumnya membaca data, tetapi endpoint OAuth authorize/callback menjalankan proses koneksi. DELETE yang tersedia hanya untuk memutus koneksi Telegram. Mengakhiri sesi menghapus run aktif dari registry, tetapi tidak menghapus audit log yang sudah tersimpan.
+Operasi bisnis menggunakan POST untuk memulai proses atau memberi respons. GET umumnya membaca data, tetapi endpoint OAuth authorize/callback menjalankan proses koneksi. DELETE tersedia untuk koneksi dan kontak Telegram. Mengakhiri sesi menghapus run aktif dari registry serta data kontak Telegram sementara, tetapi tidak menghapus audit log yang sudah tersimpan.
 
 ## 4. Flow persiapan aplikasi dan OAuth
 
@@ -138,8 +143,11 @@ sequenceDiagram
 
 - Jalankan authorize sebagai navigasi browser agar pengguna dapat menyelesaikan consent.
 - Provider mengisi `code` dan `state`; aplikasi tidak membuat nilai callback sendiri.
+- Endpoint authorize membuat `state` acak, menyimpan hash SHA-256-nya di tabel `oauth_states`, dan memberi masa berlaku 10 menit secara default. Nilai mentah hanya dikirim ke provider/browser.
+- Callback mengonsumsi state secara atomik dan sekali pakai. State tetap dapat diverifikasi bila API restart atau callback ditangani worker lain yang memakai database yang sama; state yang kedaluwarsa, sudah dipakai, atau berasal dari provider berbeda ditolak.
 - Token disimpan backend dan digunakan konektor saat action berjalan. Response callback tidak mengembalikan access token.
-- Callback mengembalikan 400 jika pertukaran token/state gagal, dan 422 bila parameter tidak valid.
+- State dikonsumsi sebelum pertukaran authorization code. Jika pertukaran token gagal, mulai lagi dari authorize untuk memperoleh state dan code baru.
+- Callback mengembalikan 400 jika pertukaran token gagal atau state tidak sah/kedaluwarsa, 422 bila parameter tidak valid, dan 503 bila akses database untuk state atau token tidak tersedia.
 - Implementasi lokal menentukan `connected` dari keberadaan record token. Nilai `true` bukan hasil pemeriksaan langsung ke provider bahwa token masih berlaku.
 - Tidak ada endpoint OAuth disconnect/refresh publik dalam kontrak ini.
 
@@ -151,7 +159,7 @@ Redirect URI yang dipakai deployment aktif:
 | Gmail | `https://laplace-agentgate.bccdev.id/api/v1/oauth/gmail/callback` |
 | Calendar | `https://laplace-agentgate.bccdev.id/api/v1/oauth/calendar/callback` |
 
-Ketiga URL di atas telah diverifikasi dari response authorize aktif. Flow Calendar juga telah diuji sampai status terhubung dan pembuatan acara berhasil. Token ketiga provider masih disimpan sebagai konfigurasi global aplikasi, bukan per sesi browser.
+Ketiga URL di atas telah diverifikasi dari response authorize aktif. Flow Calendar juga telah diuji sampai status terhubung dan pembuatan acara berhasil. Access token dan refresh token disimpan secara persisten di tabel `oauth_tokens`, dengan satu record global untuk setiap provider, bukan satu record per sesi browser. Tabel `oauth_states` hanya menyimpan hash state sementara dan tidak menyimpan access token, authorization code, atau nilai state mentah.
 
 ## 5. Flow chat: pratinjau rencana
 
@@ -212,14 +220,14 @@ HTTP 200 berarti run berhasil dimulai; action belum tentu selesai atau berhasil.
 1. Panggil `GET /api/v1/chat/execute/{run_id}`.
 2. Baca `status` run serta `steps[]`: `index`, `action_id`, `status`, data, decision, dan execution sesuai kontrak.
 3. Jika step `waiting_approval`, tampilkan pilihan approve/decline.
-4. Jika step `waiting_input`, tampilkan input sesuai kebutuhan step.
+4. Jika step `waiting_input`, minta input pengguna. Daftar field bernama saat ini hanya tersedia pada event SSE `awaiting_input.data.fields`; polling state belum meneruskan nilai `sanitize_fields`. Untuk satu jawaban bebas, klien polling dapat mengirim `text`.
 5. Kirim keputusan ke endpoint respond; terus baca state run yang sama.
 6. Berhenti polling saat run terminal: `done`, `failed`, `blocked`, `declined`, `error`, atau `cancelled`.
 7. Ambil audit melalui `GET /api/v1/runs/{run_id}/actions` atau `GET /api/v1/audits?run_id={run_id}`.
 
 Interval polling 1–2 detik dapat menjadi pilihan aplikasi; API tidak menetapkan interval wajib.
 
-Response state membungkus parameter action di `steps[].data`, terpisah dari `index`, `action_id`, `status`, `decision`, `execution`, `sanitize_fields`, dan `audit_event`. Bentuk ini telah diuji pada run yang memiliki step ketika masih `running` dan setelah `done`; keduanya mengembalikan HTTP 200. Status `running` dengan `decision: null` berarti planner/guardrail belum selesai, bukan kegagalan polling.
+Response state membungkus parameter action di `steps[].data`, terpisah dari `index`, `action_id`, `status`, `decision`, `execution`, `sanitize_fields`, dan `audit_event`. Bentuk ini telah diuji pada run yang memiliki step ketika masih `running` dan setelah `done`; keduanya mengembalikan HTTP 200. Pada implementasi aktif, adapter polling mengambil data dari `StepState.public()` yang tidak menyertakan dua atribut terakhir, sehingga `sanitize_fields` dan `audit_event` selalu `null` walaupun schema mencantumkannya. Ambil field input dari event SSE `awaiting_input` dan detail audit dari endpoint histori. Status `running` dengan `decision: null` berarti planner/guardrail belum selesai, bukan kegagalan polling.
 
 Gunakan `X-AgentGate-Session` yang sama pada execute, state, dan respond. Sesi lain atau request tanpa konteks yang sesuai menerima 404 agar keberadaan run tidak dibocorkan; sesi yang sudah berakhir menerima 401.
 
@@ -264,7 +272,7 @@ Ambil `run_id` dari frame pertama. Frame dipisahkan baris kosong; satu potongan 
 | `awaiting_approval` | Menunggu persetujuan | POST respond dengan approve/decline |
 | `awaiting_input` | Memerlukan isian/klarifikasi | Baca `data.fields`, kirim input lewat respond |
 | `executing` | Eksekusi sedang berjalan | Tampilkan indikator eksekusi |
-| `step_result` | Hasil action tersedia | Tampilkan hasil, simpan referensi audit |
+| `step_result` | Hasil action tersedia | Tampilkan hasil; ambil audit melalui `run_id` atau `action_id` dari step karena event ini tidak membawa `audit_id` |
 | `replanning` | Rencana diperbarui berdasarkan observasi | Tunggu event plan berikutnya |
 | `done` | Lifecycle run berakhir | Baca status akhir; event ini tidak selalu berarti sukses |
 | `error` | Terjadi error lifecycle | Tampilkan pesan dan hentikan pembacaan stream |
@@ -449,7 +457,7 @@ Setelah response, gunakan `action_id` untuk `GET /actions/{action_id}` dan `run_
 
 - `url` wajib.
 - Gunakan `action` untuk satu aksi atau `actions` untuk array urutan aksi. Jangan mengisi keduanya sekaligus dengan nilai nonkosong.
-- Kedua field action opsional menurut schema; contoh sebaiknya selalu menyatakan aksi yang diinginkan.
+- Kedua field action opsional menurut schema. Bila keduanya kosong, agent hanya membuka URL dan membuat snapshot/metadata halaman tanpa interaksi tambahan.
 - `timeout_ms` memiliki batas 1.000–60.000 ms; default berasal dari konfigurasi server.
 - `wait_until`: `commit`, `domcontentloaded`, `load`, atau `networkidle`; default dari konfigurasi.
 - Output berupa `AuditEvent`, bukan SSE atau response mulai run chat.
@@ -518,16 +526,32 @@ Angka di atas ilustratif. Implementasi menghitung jumlah audit dan rata-rata int
 1. `GET /api/v1/telegram/connection` dengan header `X-AgentGate-Session` dari sesi browser aktif.
 2. Bila belum terhubung, `POST /api/v1/telegram/connect` dengan session ID yang sama.
 3. Baca `connect_url` dan `expires_at` dari response.
-4. Buka `connect_url` di Telegram dan selesaikan interaksi bot.
+4. Buka `connect_url` di Telegram dan selesaikan interaksi bot. Tautan berlaku sepuluh menit dan hanya dapat dipakai sekali.
 5. Baca ulang GET connection hingga status koneksi diketahui.
 6. Saat memulai chat run, frontend demo memakai session ID yang sama agar run dan koneksi Telegram berada di lingkup tersebut. Klien lama tetap dapat memakai `X-AgentGate-Owner`.
-7. Untuk disconnect, panggil `DELETE /api/v1/telegram/connection`, lalu baca status terbaru.
+7. Untuk disconnect, panggil `DELETE /api/v1/telegram/connection`, lalu baca status terbaru. Operasi ini juga menghapus undangan dan kontak sementara dalam scope yang sama.
 
 `X-AgentGate-Owner` tanpa sesi adalah konteks kompatibilitas dan bukan autentikasi. Browser session yang berakhir akan memutus koneksi Telegram untuk sesi itu. Status koneksi OAuth tetap global pada deployment dan belum termasuk isolasi sesi.
 
+Satu identitas akun Telegram utama hanya dapat berstatus terhubung ke satu owner/sesi AgentGate pada satu waktu. Jika sesi lain mencoba menghubungkan akun yang masih terikat, bot menjawab bahwa Telegram tersebut sudah terhubung ke akun AgentGate lain. Sesi pertama harus menjalankan disconnect atau diakhiri sebelum akun yang sama dapat dihubungkan ke sesi baru. Satu owner yang menghubungkan akun utama lain akan mengganti koneksi lamanya.
+
+### 12.2 Menambahkan kontak penerima ke sesi
+
+1. Hubungkan akun Telegram utama sesi terlebih dahulu.
+2. Panggil `POST /api/v1/telegram/contact-invitations` memakai `X-AgentGate-Session` dan body seperti `{"alias":"Muhammad Arsyad"}`.
+3. Kirim `invite_url` yang diterima kepada orang tersebut. Tautan berlaku sepuluh menit dan hanya dapat dipakai sekali.
+4. Penerima membuka tautan dan menekan **Start** pada bot. Telegram kemudian mengirim `POST /api/v1/telegram/webhook`; browser tidak melakukan POST atas nama penerima.
+5. Poll `GET /api/v1/telegram/contacts` sampai alias muncul. Response hanya memuat `contact_id`, alias, username, display name, dan waktu pembuatan; alamat internal Telegram tidak dikembalikan.
+6. Prompt selanjutnya dapat menyebut alias, display name, atau `@username` persis. Resolver hanya mencari koneksi utama dan kontak sementara pada sesi run yang sama.
+7. Untuk menghapus satu penerima, panggil `DELETE /api/v1/telegram/contacts/{contact_id}`.
+
+Satu penerima dapat menerima undangan dari sesi berbeda, tetapi setiap salinan kontak hanya terlihat dan dapat dipakai oleh sesi pengundang. Undangan tidak mengganti koneksi Telegram utama. Disconnect, refresh/reset/close, atau idle timeout menghapus undangan, kontak sementara, dan identitas koneksi Telegram utama sesi. Catatan lifecycle sesi dan audit yang sudah dibuat tetap berada di database; audit aksi Telegram yang telah dieksekusi dapat tetap memuat alias dan alamat tujuan sebagai bukti eksekusi, sehingga cleanup sesi bukan penghapusan audit historis.
+
+Resolusi penerima keluar mengikuti urutan exact username lalu exact alias/display name; numeric chat ID hanya diterima jika alamat itu sudah berada dalam lingkup sesi. Beberapa hasil yang sama menghasilkan klarifikasi, bukan pemilihan otomatis. Alias `me`/`saya sendiri` menggunakan koneksi utama sesi. Jika planner mengirim placeholder seperti `<chat_id>`, agent meminta nama penerima atau mengarahkan pembuatan undangan kontak dan tidak meminta pengguna mengisi ID internal.
+
 Karena refresh halaman mengakhiri sesi lama, koneksi Telegram milik sesi tersebut juga diputus. Hubungkan kembali Telegram setelah refresh bila flow browser baru memerlukannya.
 
-### 12.2 Update masuk dan approval bot — deployment aktif
+### 12.3 Update masuk dan approval bot — deployment aktif
 
 ```text
 Pengguna mengirim pesan Telegram
@@ -609,17 +633,21 @@ Contoh: sebuah run `declined` dapat memiliki audit action `SKIPPED`. Step `appro
 
 | HTTP | Kondisi | Langkah pemanggil |
 |---|---|---|
-| 200 | Request berhasil diproses/diterima | Tetap periksa status bisnis, run, atau audit |
-| 401 | Header sesi wajib tidak ada, ID sesi tidak valid, kedaluwarsa, atau sudah berakhir | Buat sesi baru sebelum mengulang request |
+| 200 | Request berhasil diproses/diterima; endpoint koleksi dapat mengembalikan `[]` ketika tidak ada item yang terlihat | Tetap periksa status bisnis, run, audit, dan isi koleksi |
+| 401 | Endpoint yang mewajibkan sesi dipanggil tanpa `X-AgentGate-Session`, atau request mengirim session ID yang invalid, kedaluwarsa, atau sudah berakhir | Buat sesi baru sebelum mengulang request |
 | 307 | Authorize OAuth | Lanjutkan redirect di browser |
 | 400 | Callback OAuth gagal; Stripe signature/payload salah; owner legacy tidak valid; session ID dikirim melalui header owner | Periksa callback/configuration, payload, atau header identitas |
 | 403 | Secret Telegram salah | Periksa konfigurasi webhook pengirim |
-| 404 | Run/step/action tidak ditemukan | Periksa ID; untuk run, periksa histori audit bila sesi sudah hilang |
-| 409 | Step tidak menunggu jenis respons tersebut | Baca state terbaru sebelum menawarkan aksi lagi |
+| 404 | Resource tunggal seperti live run, step respons, action, atau kontak Telegram tidak ditemukan atau berada di luar scope | Periksa ID dan gunakan konteks owner/sesi pembuat resource |
+| 409 | Step tidak menunggu respons tersebut, atau sesi belum menghubungkan Telegram saat membuat undangan kontak | Baca state terbaru atau hubungkan Telegram terlebih dahulu |
 | 422 | Validasi body/path/query/header gagal | Perbaiki field sesuai detail validasi |
-| 503 | Konfigurasi webhook belum siap atau proses Stripe tidak tersedia | Periksa konfigurasi/service backend |
+| 503 | Database OAuth, pembuatan tautan/undangan Telegram, konfigurasi webhook, atau proses Stripe tidak tersedia | Periksa database dan konfigurasi/service backend |
 
 Error HTTP biasanya membawa `detail`; validasi dapat berisi array detail dengan lokasi field. Setelah koneksi SSE terbuka, error lifecycle dapat dikirim sebagai event `error`, bukan mengganti status HTTP response yang sudah dikirim.
+
+Endpoint `POST /api/v1/sessions/heartbeat`, `POST /api/v1/telegram/contact-invitations`, `GET /api/v1/telegram/contacts`, dan `DELETE /api/v1/telegram/contacts/{contact_id}` memakai dependency yang mewajibkan sesi aktif. Tanpa header sesi, endpoint tersebut menghasilkan 401. Endpoint scoped lain umumnya memakai resolver owner kompatibel: bila kedua header identitas tidak ada, request berjalan sebagai owner legacy literal `default`; bila `X-AgentGate-Session` diberikan tetapi tidak valid atau sudah berakhir, request menghasilkan 401 dan tidak fallback ke owner `default`.
+
+`GET /api/v1/chat/execute/{run_id}` dan endpoint resource tunggal lain memakai 404 untuk ID yang tidak ditemukan atau berbeda scope. Sebaliknya, `GET /api/v1/runs/{run_id}/actions` adalah endpoint koleksi: implementasi mengambil audit berdasarkan `run_id`, memfilter scope, lalu mengembalikan list. Karena itu run yang tidak ada, run yang belum memiliki audit, dan run dengan audit yang seluruhnya berada di scope lain sama-sama menghasilkan HTTP 200 dengan `[]`.
 
 Run dan penantian jawaban juga memiliki timeout berdasarkan konfigurasi `AGENT_RUN_TIMEOUT_SEC` dan `AGENT_WAIT_RESPONSE_TIMEOUT_SEC`. Kode lokal menetapkan run `error` untuk timeout keseluruhan, dan `failed` untuk timeout menunggu jawaban. Jangan membiarkan UI terus menampilkan menunggu setelah status terminal.
 
@@ -634,9 +662,10 @@ Hal berikut masih perlu diperhatikan saat mengintegrasikan deployment aktif:
 1. **Petunjuk stream pada execute:** deskripsi menyebut pelacakan streaming, tetapi implementasi POST stream membuat run baru tanpa parameter `run_id`. Jangan memperlakukan response `stream_endpoint` sebagai subscription run lama.
 2. **Approval audit versus sesi aktif:** audit pending tidak otomatis memiliki waiter dan step interaktif yang valid. Tidak ada endpoint `POST /approvals/{id}/approve` pada kontrak.
 3. **Scenarios:** `v1/scenarios.py` masih berisi placeholder; belum ada endpoint scenarios di OpenAPI maupun router utama.
-4. **OAuth global:** token GitHub, Gmail, dan Calendar belum dipisahkan per browser session.
+4. **OAuth global:** tabel `oauth_tokens` menyimpan satu record token global per provider; token GitHub, Gmail, dan Calendar belum dipisahkan per browser session.
 5. **Run inbound Telegram:** pesan langsung ke bot membuat run channel Telegram yang belum dipetakan ke `X-AgentGate-Session`; run tersebut memakai konteks legacy dan tidak muncul dalam live state sesi browser.
-6. **Registry in-memory:** state run aktif, waiter approval, dan deduplikasi callback tidak bertahan saat proses API direstart. Audit yang sudah ditulis tetap berada di database.
+6. **Registry run in-memory:** state run aktif, waiter approval, dan deduplikasi callback Telegram tidak bertahan saat proses API direstart. Audit yang sudah ditulis tetap berada di database. State OAuth authorize sudah persisten di database dan tidak termasuk keterbatasan ini.
+7. **Metadata polling belum lengkap:** response model state menyediakan `sanitize_fields` dan `audit_event`, tetapi serializer aktif tidak meneruskan nilainya. Gunakan SSE `awaiting_input.data.fields` untuk nama field input dan endpoint audit untuk catatan final.
 
 ## 16. Urutan integrasi yang disarankan
 
@@ -652,6 +681,8 @@ Hal berikut masih perlu diperhatikan saat mengintegrasikan deployment aktif:
 | Statistik audit | GET benchmark; GET audits bila butuh detail |
 | Hubungkan provider | GET oauth/status → GET authorize → callback provider → GET oauth/status |
 | Hubungkan Telegram di server | GET connection → POST connect → buka connect_url → GET connection |
+| Tambahkan penerima Telegram | POST contact-invitations → kirim invite_url → penerima menekan Start → GET contacts |
+| Hapus penerima Telegram | DELETE contacts/{contact_id} → GET contacts |
 | Putus Telegram di server | DELETE connection → GET connection |
 | Approval dari bot Telegram | Kirim prompt ke bot → tunggu tombol → tekan Approve/Reject → webhook callback → baca state tanpa header sesi browser |
 

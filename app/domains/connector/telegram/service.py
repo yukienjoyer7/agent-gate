@@ -54,6 +54,10 @@ class TelegramWebhookMisconfiguredError(Exception):
     """Raised when Telegram webhook verification cannot be performed safely."""
 
 
+class TelegramConnectionRequiredError(Exception):
+    """Raised when a session tries to invite contacts before connecting Telegram."""
+
+
 class BoundedDeduplicator:
     """Small bounded in-memory duplicate tracker for Telegram update/callback ids."""
 
@@ -105,12 +109,7 @@ class TelegramService:
 
     async def create_connection(self, owner_id: str) -> tuple[str, datetime]:
         """Create a short-lived deep link; only its hash is persisted."""
-        settings = self._settings_factory()
-        username = str(getattr(settings, "TELEGRAM_BOT_USERNAME", "") or "").strip().lstrip("@")
-        if not username:
-            username = await self._connector.get_bot_username()
-        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
-            raise ValueError("Telegram bot username is invalid")
+        username = await self._bot_username()
         token = secrets.token_urlsafe(24)
         expires_at = datetime.now(UTC) + _LINK_TOKEN_TTL
         await self._contacts.create_link_token(
@@ -120,18 +119,52 @@ class TelegramService:
         )
         return f"https://t.me/{username}?start={token}", expires_at
 
+    async def create_contact_invitation(self, session_id: str, alias: str) -> tuple[str, datetime]:
+        """Create a one-use invitation that adds one recipient to this session."""
+        if await self._contacts.get_connection(session_id) is None:
+            raise TelegramConnectionRequiredError("connect Telegram before inviting contacts")
+        username = await self._bot_username()
+        token = f"contact_{secrets.token_urlsafe(18)}"
+        expires_at = datetime.now(UTC) + _LINK_TOKEN_TTL
+        await self._contacts.create_contact_invite(
+            session_id,
+            alias,
+            token_hash=_hash_link_token(token),
+            expires_at=expires_at,
+        )
+        return f"https://t.me/{username}?start={token}", expires_at
+
+    async def list_session_contacts(self, session_id: str):
+        return await self._contacts.list_session_contacts(session_id)
+
+    async def delete_session_contact(self, session_id: str, contact_id: str) -> bool:
+        return await self._contacts.delete_session_contact(session_id, contact_id)
+
     async def connection_status(self, owner_id: str):
         return await self._contacts.get_connection(owner_id)
 
     async def disconnect(self, owner_id: str) -> bool:
-        return await self._contacts.disconnect(owner_id)
+        await self._contacts.delete_session_contact_data(owner_id)
+        return await self._contacts.delete_connection(owner_id)
 
     async def end_browser_owner_session(self, owner_id: str) -> None:
         """Disconnect Telegram and revoke unused connect links for a session."""
         try:
             await self._contacts.revoke_link_tokens(owner_id)
         finally:
-            await self._contacts.disconnect(owner_id)
+            try:
+                await self._contacts.delete_session_contact_data(owner_id)
+            finally:
+                await self._contacts.delete_connection(owner_id)
+
+    async def _bot_username(self) -> str:
+        settings = self._settings_factory()
+        username = str(getattr(settings, "TELEGRAM_BOT_USERNAME", "") or "").strip().lstrip("@")
+        if not username:
+            username = await self._connector.get_bot_username()
+        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+            raise ValueError("Telegram bot username is invalid")
+        return username
 
     def validate_webhook_secret(self, received_secret: str | None) -> None:
         expected_secret = self._settings_factory().TELEGRAM_WEBHOOK_SECRET
@@ -167,6 +200,8 @@ class TelegramService:
 
         start_token = _start_token(message.get("text"))
         if start_token is not None:
+            if start_token.startswith("contact_"):
+                return await self._handle_contact_invite_start(message, start_token, update_id)
             return await self._handle_link_start(message, start_token, update_id)
 
         # Registration is an inbound-channel concern, not a side effect of a
@@ -238,6 +273,58 @@ class TelegramService:
             chat_id,
             text,
             run_id="telegram_linking",
+            reply_to_message_id=message.get("message_id"),
+        )
+        return {"ok": True, "status": "accepted"}
+
+    async def _handle_contact_invite_start(
+        self, message: dict[str, Any], token: str, update_id: Any
+    ) -> dict[str, Any]:
+        chat = message.get("chat")
+        sender = message.get("from")
+        if not isinstance(chat, dict) or chat.get("type") != "private":
+            return {"ok": True, "status": "ignored"}
+        chat_id = _coerce_chat_id(chat.get("id"))
+        telegram_user_id = _coerce_chat_id(sender.get("id")) if isinstance(sender, dict) else None
+        if chat_id is None or telegram_user_id is None:
+            return {"ok": True, "status": "ignored"}
+
+        profile = sender if isinstance(sender, dict) else chat
+        username = _optional_text(profile.get("username")) or _optional_text(chat.get("username"))
+        first_name = _optional_text(profile.get("first_name")) or _optional_text(
+            chat.get("first_name")
+        )
+        last_name = _optional_text(profile.get("last_name")) or _optional_text(
+            chat.get("last_name")
+        )
+        display_name = build_display_name(first_name, last_name, fallback=username)
+        try:
+            linked, reason, _ = await self._contacts.consume_contact_invite(
+                token_hash=_hash_link_token(token),
+                chat_id=chat_id,
+                telegram_user_id=telegram_user_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                display_name=display_name,
+                now=datetime.now(UTC),
+            )
+        except Exception:  # noqa: BLE001 - webhook must not leak token/database details
+            logger.warning("Telegram contact invitation failed", extra={"update_id": update_id})
+            linked, reason = False, "unavailable"
+
+        if linked:
+            text = "Kontak Telegram berhasil ditambahkan ke sesi AgentGate pengundang."
+        elif reason == "self_contact":
+            text = "Akun Telegram utama tidak dapat ditambahkan sebagai kontak penerima."
+        elif reason == "session_ended":
+            text = "Sesi pengundang sudah berakhir. Minta tautan undangan baru."
+        else:
+            text = "Tautan undangan kontak tidak valid atau sudah kedaluwarsa."
+        await self._send_message(
+            chat_id,
+            text,
+            run_id="telegram_contact_invite",
             reply_to_message_id=message.get("message_id"),
         )
         return {"ok": True, "status": "accepted"}

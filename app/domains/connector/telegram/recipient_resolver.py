@@ -99,12 +99,19 @@ class TelegramRecipientResolver:
             if self._owner_id and find_by_chat_id is not None:
                 try:
                     try:
-                        matches = await find_by_chat_id(chat_id, connected_only=True)
+                        matches = await find_by_chat_id(
+                            chat_id,
+                            connected_only=True,
+                            owner_id=self._owner_id,
+                        )
                     except TypeError:
-                        matches = await find_by_chat_id(chat_id)
+                        try:
+                            matches = await find_by_chat_id(chat_id, connected_only=True)
+                        except TypeError:
+                            matches = await find_by_chat_id(chat_id)
                 except SQLAlchemyError:
                     return RecipientResolution(RecipientResolutionStatus.UNAVAILABLE, raw)
-                return self._matches_result(raw, matches)
+                return self._matches_result(raw, self._owner_matches(matches))
             # Preserve explicit numeric-ID compatibility for injected stores
             # that predate the connected-contact lookup.
             return RecipientResolution(
@@ -150,16 +157,42 @@ class TelegramRecipientResolver:
 
     async def _find_by_username(self, username: str):
         try:
-            return await self._contacts.find_by_username(username, connected_only=True)
+            matches = await self._contacts.find_by_username(
+                username,
+                connected_only=True,
+                owner_id=self._owner_id,
+            )
         except TypeError:
             # Test and plugin stores from the original API accepted one arg.
-            return await self._contacts.find_by_username(username)
+            try:
+                matches = await self._contacts.find_by_username(username, connected_only=True)
+            except TypeError:
+                matches = await self._contacts.find_by_username(username)
+        return self._owner_matches(matches)
 
     async def _find_by_display_name(self, display_name: str):
         try:
-            return await self._contacts.find_by_display_name(display_name, connected_only=True)
+            matches = await self._contacts.find_by_display_name(
+                display_name,
+                connected_only=True,
+                owner_id=self._owner_id,
+            )
         except TypeError:
-            return await self._contacts.find_by_display_name(display_name)
+            try:
+                matches = await self._contacts.find_by_display_name(
+                    display_name, connected_only=True
+                )
+            except TypeError:
+                matches = await self._contacts.find_by_display_name(display_name)
+        return self._owner_matches(matches)
+
+    def _owner_matches(
+        self, matches: Sequence[TelegramContactIdentity]
+    ) -> tuple[TelegramContactIdentity, ...]:
+        items = tuple(matches)
+        if self._owner_id is None:
+            return items
+        return tuple(contact for contact in items if contact.owner_id == self._owner_id)
 
     @staticmethod
     def _matches_result(

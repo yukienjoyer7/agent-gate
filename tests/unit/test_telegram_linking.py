@@ -33,6 +33,8 @@ class _LinkStore:
         self.tokens: dict[str, dict] = {}
         self.connections: dict[str, TelegramContactIdentity] = {}
         self.contacts: dict[int, TelegramContactIdentity] = {}
+        self.contact_invites: dict[str, dict] = {}
+        self.session_contacts: dict[str, list[TelegramContactIdentity]] = {}
 
     async def create_link_token(self, owner_id: str, *, token_hash: str, expires_at: datetime):
         self.tokens[token_hash] = {
@@ -80,6 +82,64 @@ class _LinkStore:
     async def disconnect(self, owner_id: str) -> bool:
         connection = self.connections.pop(owner_id, None)
         return connection is not None
+
+    async def delete_connection(self, owner_id: str) -> bool:
+        return await self.disconnect(owner_id)
+
+    async def create_contact_invite(
+        self, session_id: str, alias: str, *, token_hash: str, expires_at: datetime
+    ) -> None:
+        self.contact_invites[token_hash] = {
+            "session_id": session_id,
+            "alias": alias,
+            "expires_at": expires_at,
+            "used_at": None,
+        }
+
+    async def consume_contact_invite(self, **kwargs):
+        invite = self.contact_invites.get(kwargs["token_hash"])
+        if invite is None or invite["used_at"] is not None or invite["expires_at"] <= kwargs["now"]:
+            return False, "invalid", None
+        owner = self.connections.get(invite["session_id"])
+        if owner and owner.telegram_user_id == kwargs["telegram_user_id"]:
+            return False, "self_contact", None
+        contact = TelegramContactIdentity(
+            chat_id=kwargs["chat_id"],
+            chat_type="private",
+            username=kwargs["username"],
+            first_name=kwargs["first_name"],
+            last_name=kwargs["last_name"],
+            display_name=invite["alias"],
+            owner_id=invite["session_id"],
+            telegram_user_id=kwargs["telegram_user_id"],
+            status="connected",
+            alias=invite["alias"],
+        )
+        invite["used_at"] = kwargs["now"]
+        self.session_contacts.setdefault(invite["session_id"], []).append(contact)
+        return True, None, contact
+
+    async def list_session_contacts(self, session_id: str):
+        return self.session_contacts.get(session_id, [])
+
+    async def delete_session_contact(self, session_id: str, contact_id: str) -> bool:
+        return False
+
+    async def delete_session_contact_data(self, session_id: str) -> None:
+        self.session_contacts.pop(session_id, None)
+        self.contact_invites = {
+            key: value
+            for key, value in self.contact_invites.items()
+            if value["session_id"] != session_id
+        }
+
+    async def revoke_link_tokens(self, owner_id: str) -> int:
+        count = 0
+        for token in self.tokens.values():
+            if token["owner_id"] == owner_id and token["used_at"] is None:
+                token["used_at"] = datetime.now(UTC)
+                count += 1
+        return count
 
     async def upsert(self, **kwargs):
         identity = TelegramContactIdentity(**kwargs)
@@ -220,3 +280,40 @@ async def test_telegram_user_cannot_bind_a_second_chat_to_another_owner() -> Non
 
     assert store.connections["owner-a"].chat_id == 123
     assert "owner-b" not in store.connections
+
+
+@pytest.mark.asyncio
+async def test_contact_invitation_adds_recipient_without_replacing_owner_connection() -> None:
+    store = _LinkStore()
+    connector = _FakeConnector()
+    service = _service(store, connector)
+    owner_url, _ = await service.create_connection("session-a")
+    await service.handle_update(_start(owner_url.split("?start=", 1)[1], chat_id=100, user_id=100))
+
+    invite_url, _ = await service.create_contact_invitation("session-a", "Muhammad Arsyad")
+    invite_token = invite_url.split("?start=", 1)[1]
+    result = await service.handle_update(
+        _start(invite_token, chat_id=200, user_id=200) | {"update_id": 200}
+    )
+
+    assert result == {"ok": True, "status": "accepted"}
+    assert store.connections["session-a"].chat_id == 100
+    assert store.session_contacts["session-a"][0].chat_id == 200
+    assert store.session_contacts["session-a"][0].alias == "Muhammad Arsyad"
+    assert connector.calls[-1][1]["text"].startswith("Kontak Telegram berhasil")
+
+
+@pytest.mark.asyncio
+async def test_ending_session_hard_deletes_contacts_and_pending_invitations() -> None:
+    store = _LinkStore()
+    service = _service(store)
+    owner_url, _ = await service.create_connection("session-a")
+    await service.handle_update(_start(owner_url.split("?start=", 1)[1], chat_id=100, user_id=100))
+    await service.create_contact_invitation("session-a", "Arsyad")
+    store.session_contacts["session-a"] = [store.connections["session-a"]]
+
+    await service.end_browser_owner_session("session-a")
+
+    assert "session-a" not in store.connections
+    assert "session-a" not in store.session_contacts
+    assert store.contact_invites == {}

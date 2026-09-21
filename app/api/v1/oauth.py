@@ -3,6 +3,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Path, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.domains.oauth.repository import OAuthTokenRepository
 from app.domains.oauth.service import build_authorize_url, exchange_code
@@ -29,7 +30,9 @@ class OAuthProviderStatus(BaseModel):
 class OAuthCallbackResponse(BaseModel):
     provider: Provider = Field(..., description="OAuth provider name", examples=["github"])
     connected: bool = Field(default=True, description="Connection success status", examples=[True])
-    scope: str | None = Field(default=None, description="Granted OAuth scope", examples=["repo,user"])
+    scope: str | None = Field(
+        default=None, description="Granted OAuth scope", examples=["repo,user"]
+    )
     expires_at: str | None = Field(
         default=None,
         description="ISO 8601 format token expiration timestamp",
@@ -64,11 +67,17 @@ async def status() -> dict[str, OAuthProviderStatus]:
     },
 )
 async def authorize(
-    provider: Provider = Path(..., description="OAuth provider name ('github', 'gmail', 'calendar')", examples=["github"]),
+    provider: Provider = Path(
+        ..., description="OAuth provider name ('github', 'gmail', 'calendar')", examples=["github"]
+    ),
 ) -> RedirectResponse:
     """Open this URL in a browser (not Postman) -- it redirects to the
     provider's consent screen, which then redirects back to /callback."""
-    return RedirectResponse(build_authorize_url(provider))
+    try:
+        authorize_url = await build_authorize_url(provider)
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="OAuth state storage is unavailable") from exc
+    return RedirectResponse(authorize_url)
 
 
 @router.get(
@@ -89,6 +98,8 @@ async def callback(
         token = await exchange_code(provider, code, state)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="OAuth state storage is unavailable") from exc
 
     return OAuthCallbackResponse(
         provider=provider,

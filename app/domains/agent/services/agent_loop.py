@@ -465,10 +465,23 @@ async def _prepare_telegram_recipient(run: RunSession, step: StepState) -> Decis
         else:
             # Older planner output used a name in chat_id. Reinterpret that
             # safely as a reference; it still must be found in the registry.
-            reference = recipient if recipient is not None else chat_id
+            candidates = (recipient, chat_id, step.data.get("target"))
+            reference = next(
+                (
+                    value
+                    for value in candidates
+                    if isinstance(value, str)
+                    and value.strip()
+                    and value.strip().lower() != "telegram"
+                    and not _looks_like_placeholder(value)
+                ),
+                None,
+            )
             payload.pop("chat_id", None)
     elif recipient is not None:
-        reference = recipient
+        reference = (
+            None if isinstance(recipient, str) and _looks_like_placeholder(recipient) else recipient
+        )
     else:
         target = step.data.get("target")
         if isinstance(target, str) and target.strip() and target.strip().lower() != "telegram":
@@ -542,9 +555,15 @@ def _recipient_resolution_message(resolution: RecipientResolution) -> str:
     if resolution.status == RecipientResolutionStatus.INVALID:
         return f'Penerima Telegram "{reference}" tidak valid. Berikan @username yang terdaftar.'
     return (
-        f'Penerima Telegram "{reference}" belum terdaftar. Minta penerima membuka bot '
-        "AgentGate dan menekan Connect Telegram untuk menghubungkan akun."
+        f'Penerima Telegram "{reference}" belum terdaftar di kontak sesi. Buat undangan kontak '
+        "Telegram dari kartu integrasi, kirim tautannya kepada penerima, lalu minta penerima "
+        "menekan Start."
     )
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    candidate = value.strip()
+    return bool(re.fullmatch(r"<[^<>]+>|\{\{[^{}]+\}\}|\$\{[^{}]+\}", candidate))
 
 
 def _recipient_candidate_label(contact: object) -> str:

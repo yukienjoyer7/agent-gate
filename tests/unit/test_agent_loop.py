@@ -531,6 +531,41 @@ async def test_unresolved_or_ambiguous_telegram_recipient_asks_user_without_exec
 
 
 @pytest.mark.asyncio
+async def test_chat_id_placeholder_becomes_recipient_clarification_not_sensitive_input(
+    monkeypatch,
+):
+    resolver = _FakeTelegramResolver(RecipientResolution(RecipientResolutionStatus.NOT_FOUND, ""))
+    monkeypatch.setattr(
+        agent_loop,
+        "TelegramRecipientResolver",
+        lambda owner_id=None: resolver,
+    )
+    run = run_registry.create("kirim halo lewat Telegram", metadata={"owner_id": "session-a"})
+    step = StepState(
+        index=0,
+        action_id="act_placeholder",
+        data={
+            "action_type": "API_CALL",
+            "target_system": "telegram",
+            "target": "telegram",
+            "payload": {
+                "action": "send_message",
+                "chat_id": "<chat_id>",
+                "text": "halo",
+            },
+        },
+    )
+
+    decision = await agent_loop._prepare_telegram_recipient(run, step)
+
+    assert decision is not None
+    assert decision.decision == Decision.ASK_USER
+    assert step.data["payload"]["recipient"] == "penerima"
+    assert "chat_id" not in step.data["payload"]
+    assert step.data["telegram_resolution_pending"] is True
+
+
+@pytest.mark.asyncio
 async def test_blocked_step_stops_run(monkeypatch):
     browser_calls: list = []
 

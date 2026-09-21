@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -22,23 +22,42 @@ class FakeRepo:
         return token
 
 
-@pytest.fixture(autouse=True)
-def _clear_pending_states():
-    service._pending_states.clear()
-    yield
-    service._pending_states.clear()
+class FakeStateRepo:
+    def __init__(self, storage: dict | None = None):
+        self.storage = storage if storage is not None else {}
+
+    async def create(self, state_hash, provider, expires_at):
+        self.storage[state_hash] = {
+            "provider": provider,
+            "expires_at": expires_at,
+            "used_at": None,
+        }
+
+    async def consume(self, state_hash, provider, now):
+        row = self.storage.get(state_hash)
+        if (
+            row is None
+            or row["provider"] != provider
+            or row["used_at"] is not None
+            or row["expires_at"] <= now
+        ):
+            return False
+        row["used_at"] = now
+        return True
 
 
 def test_build_authorize_url_includes_client_id_and_state(monkeypatch):
     monkeypatch.setenv("GITHUB_OAUTH_CLIENT_ID", "client123")
     get_settings.cache_clear()
 
-    url = service.build_authorize_url("github")
+    states = FakeStateRepo()
+    url = asyncio.run(service.build_authorize_url("github", state_repo=states))
 
     assert "client_id=client123" in url
     assert "state=" in url
     state = url.split("state=")[1].split("&")[0]
-    assert service._pending_states[state] == "github"
+    assert state not in states.storage
+    assert next(iter(states.storage.values()))["provider"] == "github"
 
     get_settings.cache_clear()
 
@@ -47,7 +66,8 @@ def test_build_authorize_url_for_calendar_uses_calendar_scope_and_redirect(monke
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-client")
     get_settings.cache_clear()
 
-    url = service.build_authorize_url("calendar")
+    states = FakeStateRepo()
+    url = asyncio.run(service.build_authorize_url("calendar", state_repo=states))
 
     assert "client_id=google-client" in url
     assert "calendar.readonly" not in url
@@ -55,22 +75,27 @@ def test_build_authorize_url_for_calendar_uses_calendar_scope_and_redirect(monke
     assert parsed["scope"] == "https://www.googleapis.com/auth/calendar"
     assert parsed["redirect_uri"] == get_settings().GOOGLE_CALENDAR_OAUTH_REDIRECT_URI
     state = parsed["state"]
-    assert service._pending_states[state] == "calendar"
+    assert state not in states.storage
+    assert next(iter(states.storage.values()))["provider"] == "calendar"
 
     get_settings.cache_clear()
 
 
 def test_exchange_code_rejects_unknown_state():
     async def run():
-        return await service.exchange_code("github", "code123", "bad-state", repo=FakeRepo())
+        return await service.exchange_code(
+            "github",
+            "code123",
+            "bad-state",
+            repo=FakeRepo(),
+            state_repo=FakeStateRepo(),
+        )
 
     with pytest.raises(ValueError):
         asyncio.run(run())
 
 
 def test_exchange_code_stores_token():
-    service._pending_states["state-1"] = "gmail"
-
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -84,9 +109,17 @@ def test_exchange_code_stores_token():
 
     async def run():
         repo = FakeRepo()
+        state_repo = FakeStateRepo()
+        url = await service.build_authorize_url("gmail", state_repo=state_repo)
+        state = httpx.URL(url).params["state"]
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             token = await service.exchange_code(
-                "gmail", "authcode", "state-1", repo=repo, client=client
+                "gmail",
+                "authcode",
+                state,
+                repo=repo,
+                client=client,
+                state_repo=state_repo,
             )
         return token, repo
 
@@ -108,7 +141,7 @@ def test_get_access_token_refreshes_expired_token():
                 "gmail": StoredToken(
                     "stale",
                     "rt1",
-                    datetime.now(timezone.utc) - timedelta(seconds=1),
+                    datetime.now(UTC) - timedelta(seconds=1),
                     "scope",
                 )
             }
@@ -123,19 +156,57 @@ def test_exchange_code_raises_value_error_on_provider_error_response():
     """A non-2xx from the provider's token endpoint (expired/reused code,
     bad secret, ...) must surface as a ValueError -> 400, not an uncaught
     httpx.HTTPStatusError -> 500."""
-    service._pending_states["state-2"] = "github"
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, json={"error": "bad_verification_code"})
 
     async def run():
+        state_repo = FakeStateRepo()
+        url = await service.build_authorize_url("github", state_repo=state_repo)
+        state = httpx.URL(url).params["state"]
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             await service.exchange_code(
-                "github", "stale-code", "state-2", repo=FakeRepo(), client=client
+                "github",
+                "stale-code",
+                state,
+                repo=FakeRepo(),
+                client=client,
+                state_repo=state_repo,
             )
 
     with pytest.raises(ValueError):
         asyncio.run(run())
+
+
+def test_state_survives_service_instance_change_and_is_single_use():
+    async def run():
+        storage: dict = {}
+        authorize_repo = FakeStateRepo(storage)
+        callback_repo = FakeStateRepo(storage)
+        url = await service.build_authorize_url("github", state_repo=authorize_repo)
+        state = httpx.URL(url).params["state"]
+
+        first = await callback_repo.consume(service._hash_state(state), "github", datetime.now(UTC))
+        replay = await authorize_repo.consume(
+            service._hash_state(state), "github", datetime.now(UTC)
+        )
+        return first, replay
+
+    assert asyncio.run(run()) == (True, False)
+
+
+def test_expired_state_is_rejected():
+    async def run():
+        states = FakeStateRepo()
+        state = "expired-state"
+        await states.create(
+            service._hash_state(state),
+            "calendar",
+            datetime.now(UTC) - timedelta(seconds=1),
+        )
+        return await states.consume(service._hash_state(state), "calendar", datetime.now(UTC))
+
+    assert asyncio.run(run()) is False
 
 
 def test_get_access_token_falls_back_to_static_settings(monkeypatch):

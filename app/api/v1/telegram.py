@@ -6,10 +6,11 @@ from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from app.api.session_context import OwnerContext, get_owner_context
+from app.api.session_context import OwnerContext, get_owner_context, require_browser_session
 from app.domains.connector.telegram.service import (
+    TelegramConnectionRequiredError,
     TelegramService,
     TelegramWebhookAuthError,
     TelegramWebhookMisconfiguredError,
@@ -86,6 +87,35 @@ class TelegramConnectionResponse(BaseModel):
     display_name: str | None = None
 
 
+class TelegramContactInvitationRequest(BaseModel):
+    alias: str = Field(..., min_length=1, max_length=255)
+
+    @field_validator("alias")
+    @classmethod
+    def normalize_alias(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("alias must not be blank")
+        return normalized
+
+
+class TelegramContactInvitationResponse(BaseModel):
+    invite_url: str
+    expires_at: datetime
+
+
+class TelegramSessionContactResponse(BaseModel):
+    contact_id: str
+    alias: str
+    username: str | None = None
+    display_name: str | None = None
+    created_at: datetime | None = None
+
+
+class TelegramContactDeleteResponse(BaseModel):
+    deleted: bool
+
+
 @router.post(
     "/connect",
     response_model=TelegramConnectResponse,
@@ -136,6 +166,66 @@ async def disconnect_telegram(
 ) -> TelegramConnectionResponse:
     await telegram_service.disconnect(owner.owner_id)
     return TelegramConnectionResponse(connected=False)
+
+
+@router.post(
+    "/contact-invitations",
+    response_model=TelegramContactInvitationResponse,
+    summary="Create a session-scoped Telegram contact invitation",
+    responses={409: {"description": "The session has no connected Telegram account"}},
+)
+async def create_contact_invitation(
+    body: TelegramContactInvitationRequest,
+    owner: OwnerContext = Depends(require_browser_session),
+) -> TelegramContactInvitationResponse:
+    try:
+        invite_url, expires_at = await telegram_service.create_contact_invitation(
+            owner.owner_id, body.alias
+        )
+    except TelegramConnectionRequiredError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("Telegram contact invitation unavailable")
+        raise HTTPException(
+            status_code=503, detail="Telegram contact invitation is not available"
+        ) from exc
+    return TelegramContactInvitationResponse(invite_url=invite_url, expires_at=expires_at)
+
+
+@router.get(
+    "/contacts",
+    response_model=list[TelegramSessionContactResponse],
+    summary="List Telegram contacts in the active browser session",
+)
+async def list_telegram_contacts(
+    owner: OwnerContext = Depends(require_browser_session),
+) -> list[TelegramSessionContactResponse]:
+    contacts = await telegram_service.list_session_contacts(owner.owner_id)
+    return [
+        TelegramSessionContactResponse(
+            contact_id=contact.contact_id,
+            alias=contact.alias,
+            username=contact.username,
+            display_name=contact.display_name,
+            created_at=contact.created_at,
+        )
+        for contact in contacts
+    ]
+
+
+@router.delete(
+    "/contacts/{contact_id}",
+    response_model=TelegramContactDeleteResponse,
+    summary="Delete a Telegram contact from the active browser session",
+)
+async def delete_telegram_contact(
+    contact_id: str,
+    owner: OwnerContext = Depends(require_browser_session),
+) -> TelegramContactDeleteResponse:
+    deleted = await telegram_service.delete_session_contact(owner.owner_id, contact_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Telegram contact not found")
+    return TelegramContactDeleteResponse(deleted=True)
 
 
 @router.post(

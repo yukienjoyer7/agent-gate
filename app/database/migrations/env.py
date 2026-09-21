@@ -22,11 +22,14 @@ if sys.platform == "win32":
 from app.database.models import (  # noqa: F401
     AuditLog,
     BrowserSession,
+    OAuthState,
     OAuthToken,
     StripePayment,
     StripeWebhookEvent,
     TelegramContact,
+    TelegramContactInvite,
     TelegramLinkToken,
+    TelegramSessionContact,
 )
 
 # this is the Alembic Config object, which provides
