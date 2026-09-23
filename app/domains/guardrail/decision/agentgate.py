@@ -27,11 +27,17 @@ from app.domains.guardrail._vendor.agentgate.detectors import (
     LLMSourceCodeDetector,
     LLMUnifiedDetector,
 )
+from app.domains.guardrail._vendor.agentgate.detectors.base import Detector
+from app.domains.guardrail._vendor.agentgate.detectors.llm_client import LLMUnavailable
 from app.domains.guardrail._vendor.agentgate.sanitizer import sanitize
 from app.domains.guardrail._vendor.agentgate.schemas import ActionRequest as EngineRequest
 from app.domains.guardrail._vendor.agentgate.schemas import DecisionResponse as EngineResponse
 from app.domains.guardrail.decision.simple import decide_rule
 from app.domains.guardrail.sensitive import is_sensitive_key
+from app.domains.guardrail.services.redis_queue import (
+    GuardrailQueueError,
+    guardrail_evaluation_slot,
+)
 from app.runtime.context import current_runtime
 
 # Trusted connector capabilities, independent of planner-supplied risk hints.
@@ -428,15 +434,23 @@ class EvaluationAudit:
     """
 
     def __init__(
-        self, action: ActionRequest, rule: DecisionResponse, content_fields: tuple[str, ...]
+        self,
+        action: ActionRequest,
+        rule: DecisionResponse,
+        content_fields: tuple[str, ...],
+        *,
+        evaluation_error_override: str | None = None,
     ) -> None:
         self.action, self.rule, self.content_fields = action, rule, content_fields
+        self.evaluation_error_override = evaluation_error_override
         self.response: DecisionResponse | None = None
 
     def record(self, request: EngineRequest, response: EngineResponse, stage: str) -> str:
         # Import lazily: the host sanitizer itself uses the legacy redactor.
         from app.runtime.safety import Sanitizer
 
+        if self.evaluation_error_override is not None:
+            response.evaluation_error = self.evaluation_error_override
         mapped = _translate(self.action, response, self.rule, self.content_fields)
         audit_id = new_id("guard")
         mapped.guardrail_audit_id = audit_id
@@ -480,12 +494,39 @@ class EvaluationAudit:
         return audit_id
 
 
-def decide_agentgate(action: ActionRequest) -> DecisionResponse:
-    started = perf_counter()
+class _QueueFailure(LLMUnavailable):
+    """Expose queue failures through the engine's normal fail-closed path."""
+
+    def __init__(self, error: GuardrailQueueError) -> None:
+        self.category = error.category
+        super().__init__(str(error))
+
+
+class _QueueFailureDetector(Detector):
+    name = "redis_queue"
+
+    def __init__(self, error: GuardrailQueueError, model: str) -> None:
+        self.error = error
+        self.model = model
+
+    def scan(self, req: EngineRequest):
+        raise _QueueFailure(self.error)
+
+
+def _evaluate_prepared(
+    action: ActionRequest,
+    request: EngineRequest,
+    rule: DecisionResponse,
+    content_fields: tuple[str, ...],
+    *,
+    started: float,
+    queue_error: GuardrailQueueError | None = None,
+) -> DecisionResponse:
     settings = get_settings()
-    request, rule, content_fields = prepare(action)
     options: dict[str, Any] = {
         "model": settings.AGENTGATE_LLM_DETECTOR_MODEL,
+        "fallback_model": settings.AGENTGATE_LLM_FALLBACK_MODEL,
+        "max_fallback_attempts": settings.AGENTGATE_LLM_FALLBACK_ATTEMPTS,
         "host": settings.OLLAMA_HOST,
         "timeout": settings.AGENTGATE_LLM_DETECTOR_TIMEOUT,
     }
@@ -501,12 +542,70 @@ def decide_agentgate(action: ActionRequest) -> DecisionResponse:
             LLMActionIntentDetector,
         ]
     )
-    detectors = [] if rule.decision == Decision.BLOCK else [cls(**options) for cls in classes]
-    audit = EvaluationAudit(action, rule, content_fields)
+    if rule.decision == Decision.BLOCK:
+        detectors = []
+    elif queue_error is not None:
+        detectors = [_QueueFailureDetector(queue_error, settings.AGENTGATE_LLM_DETECTOR_MODEL)]
+    else:
+        detectors = [cls(**options) for cls in classes]
+    queue_error_message = None
+    if queue_error is not None:
+        queue_error_message = (
+            "Guardrail evaluation queue wait timed out."
+            if queue_error.category == "queue_timeout"
+            else "Guardrail evaluation queue is unavailable."
+        )
+    audit = EvaluationAudit(
+        action,
+        rule,
+        content_fields,
+        evaluation_error_override=queue_error_message,
+    )
     DecisionEngine(detectors=detectors, audit_store=audit).evaluate(request)
     assert audit.response is not None
     audit.response.latency_ms = int((perf_counter() - started) * 1000)
     return audit.response
+
+
+def decide_agentgate(action: ActionRequest) -> DecisionResponse:
+    started = perf_counter()
+    settings = get_settings()
+    request, rule, content_fields = prepare(action)
+
+    # A deterministic BLOCK does not call Ollama and must not wait behind the
+    # inference queue.
+    if rule.decision == Decision.BLOCK:
+        return _evaluate_prepared(
+            action, request, rule, content_fields, started=started
+        )
+
+    try:
+        with guardrail_evaluation_slot(
+            enabled=settings.AGENTGATE_REDIS_QUEUE_ENABLED,
+            redis_url=settings.AGENTGATE_REDIS_URL,
+            queue_name=settings.AGENTGATE_REDIS_QUEUE_NAME,
+            wait_timeout=settings.AGENTGATE_REDIS_QUEUE_WAIT_TIMEOUT,
+            # A timeout can be followed by an unload and one fallback request;
+            # keep the Redis lease alive for both model deadlines.
+            lease_seconds=max(
+                settings.AGENTGATE_REDIS_QUEUE_LEASE_SEC,
+                settings.AGENTGATE_LLM_DETECTOR_TIMEOUT
+                * (1 + settings.AGENTGATE_LLM_FALLBACK_ATTEMPTS)
+                + 60,
+            ),
+        ):
+            return _evaluate_prepared(
+                action, request, rule, content_fields, started=started
+            )
+    except GuardrailQueueError as exc:
+        return _evaluate_prepared(
+            action,
+            request,
+            rule,
+            content_fields,
+            started=started,
+            queue_error=exc,
+        )
 
 
 async def adecide_agentgate(action: ActionRequest) -> DecisionResponse:

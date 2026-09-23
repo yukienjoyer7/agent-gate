@@ -13,6 +13,7 @@ from app.config.settings import get_settings
 def isolated_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("GUARDRAIL_BACKEND", "legacy")
     monkeypatch.setenv("GUARDRAIL_LLM_ENABLED", "false")
+    monkeypatch.setenv("AGENTGATE_REDIS_QUEUE_ENABLED", "false")
     monkeypatch.setenv("LLM_TYPE", "openai")
     monkeypatch.setenv("ATOMIC_BROWSER_AUDIT", "false")
     monkeypatch.setenv("AUDIT_BACKEND", "jsonl")

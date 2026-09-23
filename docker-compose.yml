@@ -22,6 +22,22 @@ services:
     networks:
       - agentgate-network
 
+  redis:
+    image: redis:7.4-alpine
+    container_name: agentgate-redis
+    restart: unless-stopped
+
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+    networks:
+      - agentgate-network
+
   api:
     build:
       context: .
@@ -41,8 +57,16 @@ services:
       GUARDRAIL_BACKEND: ${GUARDRAIL_BACKEND:-agentgate}
       OLLAMA_HOST: ${DOCKER_OLLAMA_HOST:-http://host.docker.internal:11434}
       AGENTGATE_LLM_DETECTOR_MODEL: ${AGENTGATE_LLM_DETECTOR_MODEL:-qwen2.5:7b}
-      AGENTGATE_LLM_DETECTOR_TIMEOUT: ${AGENTGATE_LLM_DETECTOR_TIMEOUT:-600}
+      AGENTGATE_LLM_FALLBACK_MODEL: ${AGENTGATE_LLM_FALLBACK_MODEL:-gemma-4-E2B-it}
+      AGENTGATE_LLM_FALLBACK_ATTEMPTS: ${AGENTGATE_LLM_FALLBACK_ATTEMPTS:-1}
+      AGENTGATE_LLM_DETECTOR_TIMEOUT: ${AGENTGATE_LLM_DETECTOR_TIMEOUT:-200}
       AGENTGATE_DETECTOR_ARCHITECTURE: ${AGENTGATE_DETECTOR_ARCHITECTURE:-six}
+      AGENTGATE_REDIS_QUEUE_ENABLED: ${AGENTGATE_REDIS_QUEUE_ENABLED:-true}
+      AGENTGATE_REDIS_URL: ${AGENTGATE_REDIS_URL:-redis://redis:6379/0}
+      AGENTGATE_REDIS_QUEUE_NAME: ${AGENTGATE_REDIS_QUEUE_NAME:-agentgate:guardrail}
+      AGENTGATE_REDIS_QUEUE_WAIT_TIMEOUT: ${AGENTGATE_REDIS_QUEUE_WAIT_TIMEOUT:-3600}
+      AGENTGATE_REDIS_QUEUE_LEASE_SEC: ${AGENTGATE_REDIS_QUEUE_LEASE_SEC:-660}
+      AGENT_RUN_TIMEOUT_SEC: ${AGENT_RUN_TIMEOUT_SEC:-7200}
 
     # The database health dependency below gates migrations and application startup.
     command:
@@ -61,6 +85,8 @@ services:
 
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
     user: "1000:1000"

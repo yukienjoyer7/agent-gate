@@ -13,6 +13,7 @@ from app.domains.guardrail._vendor.agentgate.audit import AuditUnavailable
 from app.domains.guardrail._vendor.agentgate.detectors import llm_client
 from app.domains.guardrail.decision import adecide, decide
 from app.domains.guardrail.decision.agentgate import prepare
+from app.domains.guardrail.services.redis_queue import GuardrailQueueUnavailable
 from app.executors.router import ExecutionRouter
 from tests.upstream_guardrail.fake_llm import fake_chat_json
 
@@ -119,6 +120,26 @@ def test_detector_failures_hold_instead_of_falling_back(monkeypatch, failure):
     assert result.decision == Decision.NEED_APPROVAL
     assert result.evaluation_error
     assert records()[0]["decision"]["evaluation_error"]
+
+
+def test_redis_queue_failure_holds_action_without_calling_ollama(monkeypatch):
+    from app.domains.guardrail.decision import agentgate
+
+    monkeypatch.setenv("AGENTGATE_REDIS_QUEUE_ENABLED", "true")
+    get_settings.cache_clear()
+
+    def unavailable(**kwargs):
+        raise GuardrailQueueUnavailable("offline")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Ollama must not be called without the queue lease")
+
+    monkeypatch.setattr(agentgate, "guardrail_evaluation_slot", unavailable)
+    monkeypatch.setattr(llm_client, "chat_json", forbidden)
+    result = decide(request())
+
+    assert result.decision == Decision.NEED_APPROVAL
+    assert result.evaluation_error == "Guardrail evaluation queue is unavailable."
 
 
 def test_low_confidence_external_send_requires_clarification_before_approval():

@@ -302,11 +302,15 @@ class LLMUnifiedDetector(Detector):
         model: str | None = None,
         host: str | None = None,
         timeout: float | None = None,
+        fallback_model: str | None = None,
+        max_fallback_attempts: int | None = None,
         extra_options: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
         self.host = host
         self.timeout = timeout
+        self.fallback_model = fallback_model
+        self.max_fallback_attempts = max_fallback_attempts
         self.extra_options = extra_options
 
     def scan(self, req: ActionRequest) -> Finding:
@@ -315,12 +319,14 @@ class LLMUnifiedDetector(Detector):
             return self._finding()
 
         user_content = f"TARGET: {req.target}\nCONTENT: {req.content_text}"
-        data = llm_client.chat_json(
+        data = llm_client.chat_json_with_fallback(
             _UNIFIED_PROMPT,
             user_content,
             model=self.model,
+            fallback_model=self.fallback_model,
             host=self.host,
             timeout=self.timeout,
+            max_fallback_attempts=self.max_fallback_attempts,
             extra_options=self.extra_options,
             response_schema=UNIFIED_RESPONSE_SCHEMA,
         )

@@ -22,17 +22,21 @@ from .llm_validation import (
 # ---------------------------------------------------------------------------
 
 def _call_llm(system_prompt: str, text: str, *, model: str | None = None,
+               fallback_model: str | None = None,
                host: str | None = None, timeout: float | None = None,
+               max_fallback_attempts: int | None = None,
                extra_options: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Call the required detector runtime; empty action text needs no model call."""
     if not text:
         return None
-    return llm_client.chat_json(
+    return llm_client.chat_json_with_fallback(
         system_prompt,
         f"TEXT: {text}",
         model=model,
+        fallback_model=fallback_model,
         host=host,
         timeout=timeout,
+        max_fallback_attempts=max_fallback_attempts,
         extra_options=extra_options,
     )
 
@@ -42,15 +46,23 @@ class _LLMDetectorBase(Detector):
 
     def __init__(self, model: str | None = None, host: str | None = None,
                  timeout: float | None = None,
+                 fallback_model: str | None = None,
+                 max_fallback_attempts: int | None = None,
                  extra_options: dict[str, Any] | None = None):
         self.model = model
         self.host = host
         self.timeout = timeout
+        self.fallback_model = fallback_model
+        self.max_fallback_attempts = max_fallback_attempts
         self.extra_options = extra_options
 
     def _llm(self, system_prompt: str, text: str) -> dict | None:
-        return _call_llm(system_prompt, text, model=self.model, host=self.host,
-                         timeout=self.timeout, extra_options=self.extra_options)
+        return _call_llm(
+            system_prompt, text, model=self.model, fallback_model=self.fallback_model,
+            host=self.host, timeout=self.timeout,
+            max_fallback_attempts=self.max_fallback_attempts,
+            extra_options=self.extra_options,
+        )
 
 
 # ---------------------------------------------------------------------------

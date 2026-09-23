@@ -159,8 +159,22 @@ class Settings(BaseSettings):
     GUARDRAIL_BACKEND: Literal["agentgate", "legacy"] = "agentgate"
     OLLAMA_HOST: str = "http://localhost:11434"
     AGENTGATE_LLM_DETECTOR_MODEL: str = "qwen2.5:7b"
+    # A primary timeout unloads this model before the bounded fallback request.
+    AGENTGATE_LLM_FALLBACK_MODEL: str = "gemma-4-E2B-it"
+    AGENTGATE_LLM_FALLBACK_ATTEMPTS: int = Field(default=1, ge=0, le=1)
     AGENTGATE_LLM_DETECTOR_TIMEOUT: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     AGENTGATE_DETECTOR_ARCHITECTURE: Literal["six", "unified"] = "six"
+    # Serialize expensive local detector evaluations across API processes.
+    # Redis holds opaque queue tickets only; action content never leaves this process.
+    AGENTGATE_REDIS_QUEUE_ENABLED: bool = False
+    AGENTGATE_REDIS_URL: str = "redis://localhost:6379/0"
+    AGENTGATE_REDIS_QUEUE_NAME: str = "agentgate:guardrail"
+    AGENTGATE_REDIS_QUEUE_WAIT_TIMEOUT: float = Field(
+        default=3600.0, gt=0, le=7200.0, allow_inf_nan=False
+    )
+    AGENTGATE_REDIS_QUEUE_LEASE_SEC: float = Field(
+        default=660.0, ge=30.0, le=7200.0, allow_inf_nan=False
+    )
     GUARDRAIL_AUDIT_PATH: str = "artifacts/audit/guardrail.jsonl"
 
     # Legacy guardrail (dedicated LLM model)

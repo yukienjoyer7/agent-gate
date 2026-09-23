@@ -90,8 +90,10 @@ SELECT run_id, action_id, error_type, created_at FROM audit_logs
 
 | Symptom | Check | Action |
 |---------|-------|--------|
-| Every run pauses for approval | `agentgate doctor`; is Ollama up and the model pulled? | Start Ollama / `ollama pull qwen2.5:7b`; check `OLLAMA_HOST` (Docker: `host.docker.internal`) |
-| Detector timeouts | `AGENTGATE_LLM_DETECTOR_TIMEOUT`, `OLLAMA_NUM_PARALLEL` | Raise timeout, set parallelism to 6, use a lighter model |
+| Every run pauses for approval | `agentgate doctor`; is Ollama up and the model pulled? | Start Ollama / `ollama pull qwen2.5:7b` / `ollama pull gemma-4-E2B-it`; check `OLLAMA_HOST` (Docker: `host.docker.internal`) |
+| Detector timeouts | `AGENTGATE_LLM_DETECTOR_TIMEOUT`, `OLLAMA_NUM_PARALLEL` | Raise timeout, set parallelism to 6, verify both Qwen and Gemma are pulled, or use a lighter model |
+| Guardrail queue unavailable | `docker compose ps redis`; `redis-cli ping` | Restore Redis; actions fail closed to review while the queue is unavailable |
+| Guardrail queue delay | Redis list `<queue-name>:waiting`; Ollama `/api/ps` | Let the active CPU inference finish, reduce request concurrency, or use a faster model/GPU |
 | 5xx on `/audits`, `/runs` | DB reachable? `AUDIT_BACKEND` | Fix `DATABASE_URL`, or switch to `jsonl` temporarily |
 | Migration fails on TLS | Driver in `DATABASE_URL`; `DATABASE_SSL_MODE` | `postgresql+asyncpg`: `DATABASE_SSL_MODE=require`. `postgresql+psycopg`: add `?sslmode=require` to the URL |
 | OAuth callback error | Single worker? redirect URI exact match? | Restart flow within seconds; align redirect URI with the provider console |

@@ -34,11 +34,15 @@ class LLMPromptInjectionDetector(Detector):
         model: str | None = None,
         host: str | None = None,
         timeout: float | None = None,
+        fallback_model: str | None = None,
+        max_fallback_attempts: int | None = None,
         extra_options: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
         self.host = host
         self.timeout = timeout
+        self.fallback_model = fallback_model
+        self.max_fallback_attempts = max_fallback_attempts
         self.extra_options = extra_options
 
     def scan(self, req: ActionRequest) -> Finding:
@@ -47,12 +51,14 @@ class LLMPromptInjectionDetector(Detector):
         text = req.content_text
         if not text:
             return self._finding()
-        data = llm_client.chat_json(
+        data = llm_client.chat_json_with_fallback(
             _SYSTEM_PROMPT,
             f"TEXT: {text}",
             model=self.model,
+            fallback_model=self.fallback_model,
             host=self.host,
             timeout=self.timeout,
+            max_fallback_attempts=self.max_fallback_attempts,
             extra_options=self.extra_options,
         )
         label = require_string(data, "label", {"injection", "benign"})

@@ -74,9 +74,16 @@ cannot propose it directly; a snapshot is taken as part of `BROWSER_OPEN`.
 |----------|---------|---------|
 | `GUARDRAIL_BACKEND` | `agentgate` | `agentgate` (embedded engine) or `legacy` (explicit rollback, no auto fallback) |
 | `OLLAMA_HOST` | `http://localhost:11434` | Detector endpoint. Remote hosts require HTTPS; `host.docker.internal` is allowed over HTTP |
-| `AGENTGATE_LLM_DETECTOR_MODEL` | `qwen2.5:7b` | Detector model |
-| `AGENTGATE_LLM_DETECTOR_TIMEOUT` | 30 | Seconds per request, no retries |
+| `AGENTGATE_LLM_DETECTOR_MODEL` | `qwen2.5:7b` | Primary detector model |
+| `AGENTGATE_LLM_FALLBACK_MODEL` | `gemma-4-E2B-it` | Fallback model after a primary timeout |
+| `AGENTGATE_LLM_FALLBACK_ATTEMPTS` | 1 | Maximum fallback requests (0 or 1) |
+| `AGENTGATE_LLM_DETECTOR_TIMEOUT` | 30 | Seconds per request |
 | `AGENTGATE_DETECTOR_ARCHITECTURE` | `six` | `six` or experimental `unified` |
+| `AGENTGATE_REDIS_QUEUE_ENABLED` | `False` (`True` in Compose) | Serialize guardrail evaluations through a Redis FIFO gate |
+| `AGENTGATE_REDIS_URL` | `redis://localhost:6379/0` | Queue connection; Compose uses `redis://redis:6379/0` |
+| `AGENTGATE_REDIS_QUEUE_NAME` | `agentgate:guardrail` | Redis key namespace; only opaque tickets are stored |
+| `AGENTGATE_REDIS_QUEUE_WAIT_TIMEOUT` | 3600 | Maximum seconds to wait for the evaluation slot |
+| `AGENTGATE_REDIS_QUEUE_LEASE_SEC` | 660 | Crash-safety lease; raised automatically above primary plus bounded fallback time |
 | `GUARDRAIL_BLOCK_HINTS` | `destructive, unauthorized, data_exfiltration` | Hints that map to `BLOCK` |
 | `GUARDRAIL_NEED_APPROVAL_HINTS` | `external_send, payment, bulk_action, refund` | Hints that map to `NEED_APPROVAL` |
 | `GUARDRAIL_ASK_USER_HINTS` | `ambiguous_target, missing_target, clarification_needed` | Hints that map to `ASK_USER` |
@@ -84,8 +91,15 @@ cannot propose it directly; a snapshot is taken as part of `BROWSER_OPEN`.
 | `GUARDRAIL_MODEL` | empty | Legacy judge model; empty falls back to `LLM_MODEL` |
 
 Run Ollama with `OLLAMA_NUM_PARALLEL=6` so the six detectors can overlap. The CLI reads
-`OLLAMA_HOST`, `AGENTGATE_LLM_DETECTOR_MODEL`, `AGENTGATE_LLM_DETECTOR_TIMEOUT`,
-`AGENTGATE_DETECTOR_ARCHITECTURE` from the shell only.
+`OLLAMA_HOST`, `AGENTGATE_LLM_DETECTOR_MODEL`, `AGENTGATE_LLM_FALLBACK_MODEL`,
+`AGENTGATE_LLM_FALLBACK_ATTEMPTS`, `AGENTGATE_LLM_DETECTOR_TIMEOUT`, and
+`AGENTGATE_DETECTOR_ARCHITECTURE` from the shell only. A primary timeout unloads
+Qwen before the bounded fallback request to Gemma.
+
+Docker Compose starts Redis and enables the FIFO gate automatically. The gate serializes complete
+guardrail evaluations across API processes. Redis receives random queue tickets only; prompts,
+action payloads, and model output remain inside AgentGate. A Redis failure holds the action for
+review instead of bypassing the detector.
 
 ## Agent loop
 
@@ -94,7 +108,7 @@ Run Ollama with `OLLAMA_NUM_PARALLEL=6` so the six detectors can overlap. The CL
 | `AGENT_MAX_STEPS` | 12 (1-100) | Steps per run, including replanned steps |
 | `AGENT_MAX_REPLAN` | 4 (0-20) | Replan calls |
 | `AGENT_WAIT_RESPONSE_TIMEOUT_SEC` | 600 | Wait for approval/input |
-| `AGENT_RUN_TIMEOUT_SEC` | 900 | Whole-run timeout |
+| `AGENT_RUN_TIMEOUT_SEC` | 900 (`7200` in Compose example) | Whole-run timeout; keep above queue wait plus detector timeout |
 | `SSE_HEARTBEAT_SEC` | 15 | SSE keep-alive |
 | `RUN_REGISTRY_MAX_SESSIONS` | 500 | In-memory run cap |
 

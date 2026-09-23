@@ -18,6 +18,7 @@ of the planner provider/API key. Install Ollama, then:
 
 ```powershell
 ollama pull qwen2.5:7b
+ollama pull gemma-4-E2B-it
 $env:OLLAMA_NUM_PARALLEL = "6"
 ollama serve
 ```
@@ -31,8 +32,10 @@ whether inference actually overlaps.
 | --- | --- | --- |
 | `GUARDRAIL_BACKEND` | `agentgate` | `agentgate` or explicit `legacy` rollback |
 | `OLLAMA_HOST` | `http://localhost:11434` (`http://host.docker.internal:11434` in Docker Desktop) | Detector endpoint; remote hosts require HTTPS |
-| `AGENTGATE_LLM_DETECTOR_MODEL` | `qwen2.5:7b` | Local detector model |
-| `AGENTGATE_LLM_DETECTOR_TIMEOUT` | `30` | Seconds per detector request; no retries |
+| `AGENTGATE_LLM_DETECTOR_MODEL` | `qwen2.5:7b` | Primary local detector model |
+| `AGENTGATE_LLM_FALLBACK_MODEL` | `gemma-4-E2B-it` | Fallback model used only after a primary timeout |
+| `AGENTGATE_LLM_FALLBACK_ATTEMPTS` | `1` | Maximum fallback requests; bounded to 0 or 1 |
+| `AGENTGATE_LLM_DETECTOR_TIMEOUT` | `30` | Seconds per detector request |
 | `AGENTGATE_DETECTOR_ARCHITECTURE` | `six` | Six detectors or upstream experimental `unified` |
 | `GUARDRAIL_AUDIT_PATH` | `artifacts/audit/guardrail.jsonl` | Server evaluation journal |
 
@@ -139,3 +142,9 @@ To update upstream, compare the files listed in `NOTICE.md` against a new pinned
 revision, retain the host audit shim, and rerun both suites and the wheel smoke.
 The vendored source is excluded from host formatting/linting and mypy errors so
 its contents stay comparable with the original source.
+
+When a primary Qwen request times out, the detector logs the timeout, sends an
+Ollama unload request with `keep_alive: 0`, waits for that response, and only then
+sends one request to the fallback Gemma model. An unload failure prevents the
+fallback request and is reported as a guardrail detector failure. A fallback
+failure is also bounded and never loops indefinitely.

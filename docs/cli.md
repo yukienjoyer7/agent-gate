@@ -47,6 +47,7 @@ agentgate doctor
 If Ollama already runs as a service, configure its parallelism in that service.
 On PowerShell, use `$env:OLLAMA_NUM_PARALLEL = "6"` before `ollama serve`.
 Supported shell overrides are `OLLAMA_HOST`, `AGENTGATE_LLM_DETECTOR_MODEL`,
+`AGENTGATE_LLM_FALLBACK_MODEL`, `AGENTGATE_LLM_FALLBACK_ATTEMPTS`,
 `AGENTGATE_LLM_DETECTOR_TIMEOUT`, and `AGENTGATE_DETECTOR_ARCHITECTURE` (`six` or
 experimental `unified`). These are independent of the planner configuration.
 `GUARDRAIL_BACKEND=legacy` explicitly restores the earlier guardrail.

@@ -22,6 +22,8 @@ def get_default_detectors(
     model: str | None = None,
     host: str | None = None,
     timeout: float | None = None,
+    fallback_model: str | None = None,
+    max_fallback_attempts: int | None = None,
     extra_options: dict[str, Any] | None = None,
 ) -> list[Detector]:
     """Build a fresh detector suite.
@@ -50,6 +52,8 @@ def get_default_detectors(
         "model": model,
         "host": host,
         "timeout": timeout,
+        "fallback_model": fallback_model,
+        "max_fallback_attempts": max_fallback_attempts,
         "extra_options": extra_options,
     }
     architecture = os.environ.get("AGENTGATE_DETECTOR_ARCHITECTURE", "six").lower()

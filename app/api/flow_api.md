@@ -10,7 +10,7 @@ Dokumen ini menjelaskan urutan penggunaan API, hubungan antar-endpoint, data pen
 - Base URL server: `https://laplace-agentgate.bccdev.id`.
 - Prefix API: `/api/v1`. Seluruh path pada tabel dan contoh menggunakan prefix ini, kecuali `/`.
 
-**Status verifikasi server:** OpenAPI aktif pada 21 September 2026 memuat 30 operasi pada 29 path. Tiga endpoint sesi browser, kontak Telegram per sesi, state OAuth persisten, serta migrasi `0008` sudah aktif. Berkas implementasi untuk polling, normalisasi action, callback Telegram, OAuth, dan sesi browser pada proses API sama dengan checkout ini.
+**Status verifikasi server:** OpenAPI aktif pada 22 September 2026 memuat 30 operasi pada 29 path. Tiga endpoint sesi browser, kontak Telegram per sesi, state OAuth persisten, serta migrasi `0008` sudah aktif. Berkas implementasi untuk polling, normalisasi action, callback Telegram, OAuth, sesi browser, dan antrean guardrail Redis pada proses API sama dengan checkout ini. Penambahan Redis tidak mengubah path, request body, response schema, atau status HTTP publik.
 
 Pengujian runtime yang menjadi dasar dokumen:
 
@@ -19,7 +19,7 @@ Pengujian runtime yang menjadi dasar dokumen:
 | Polling run dengan step | `GET /chat/execute/{run_id}` mengembalikan 200 ketika `running` dan `done`; setiap item memakai bentuk `steps[].data` yang sesuai response model. Serializer aktif belum meneruskan nilai `sanitize_fields` dan `audit_event`, sehingga kedua field itu bernilai `null` |
 | Action nullable | `target: null` dan `payload_summary: null` pada `/actions/run` sama-sama mengembalikan 200 dan dinormalisasi sebelum audit |
 | OAuth | Authorize GitHub, Gmail, dan Calendar memakai callback publik HTTPS; koneksi Calendar dan pembuatan acara berhasil diuji melalui server |
-| Guardrail | Backend aktif `agentgate` memakai detector Qwen; run Calendar menghasilkan `NEED_APPROVAL` tanpa `evaluation_error`, sedangkan run lama pernah memakai fallback setelah detector timeout |
+| Guardrail | Backend aktif `agentgate` memakai detector Qwen melalui Redis FIFO; timeout per evaluasi sekarang 200 detik dan kegagalan/timeout ditahan secara fail-closed. Uji nyata menunjukkan evaluasi CPU dapat memerlukan sekitar 186 detik |
 | Callback Telegram | Prompt masuk dan callback tombol Reject sama-sama diterima webhook dengan 200; run menjadi `declined`, audit `SKIPPED`, dan tidak ada response-validation error |
 | Sesi browser | Refresh mengakhiri sesi lama dan membuat sesi baru; sesi lama mendapat 401, sedangkan sesi baru/tanpa sesi mendapat 404 saat membaca action sesi lama; log sesi dan audit tetap tersimpan |
 
@@ -57,13 +57,17 @@ flowchart TD
     U --> S[POST /chat/execute/stream - SSE]
     E --> R[Run aktif dan step]
     S --> R
-    R --> G[Evaluasi guardrail setiap step]
-    G --> A[Eksekusi jika diizinkan]
-    G --> W[Tunggu approval atau input]
-    W --> Q[POST /chat/execute/run_id/respond]
-    Q --> R
+    R --> G[Rule dan policy setiap step]
+    G -->|bukan deterministic BLOCK| QF[Redis FIFO - satu evaluasi aktif]
+    QF --> L[Detector Qwen]
+    L --> V[Keputusan guardrail]
+    G -->|deterministic BLOCK| V
+    V --> A[Eksekusi jika diizinkan]
+    V --> W[Tunggu approval atau input]
+    W --> QR[POST /chat/execute/run_id/respond]
+    QR --> R
     A --> D[Audit repository]
-    G --> B[Blocked atau declined: catat hasil]
+    V --> B[Blocked atau declined: catat hasil]
     B --> D
     D --> H[GET /runs dan /runs/run_id/actions]
     D --> I[GET /audits dan /actions/action_id]
@@ -372,13 +376,17 @@ Pada lifecycle chat lokal, step dapat menunggu sebelum audit final ditulis. Seba
 
 ### 8.4 Backend guardrail aktif
 
-Deployment memakai `GUARDRAIL_BACKEND=agentgate`. Backend ini menjalankan rule/policy dan detector Qwen yang dikonfigurasi melalui `AGENTGATE_LLM_DETECTOR_MODEL`; `GUARDRAIL_LLM_ENABLED` hanya berlaku pada backend `legacy`, sehingga nilai `False` pada setting tersebut tidak mematikan detector Qwen ketika backend yang dipilih adalah `agentgate`.
+Deployment memakai `GUARDRAIL_BACKEND=agentgate`. Backend ini menjalankan rule/policy dan detector dengan model utama Qwen yang dikonfigurasi melalui `AGENTGATE_LLM_DETECTOR_MODEL`, serta model fallback Gemma melalui `AGENTGATE_LLM_FALLBACK_MODEL`; `GUARDRAIL_LLM_ENABLED` hanya berlaku pada backend `legacy`, sehingga nilai `False` pada setting tersebut tidak mematikan detector Qwen ketika backend yang dipilih adalah `agentgate`.
 
-Alasan keputusan dapat menggabungkan hasil rule, domain/risk hint, dan detector. Jika detector timeout atau tidak tersedia, engine mencatat kegagalan detector dan memakai jalur kebijakan yang tetap tersedia; pesan timeout tidak berarti detector sengaja dinonaktifkan. Pada pengujian Calendar melalui bot, Qwen menyelesaikan evaluasi dan menghasilkan `NEED_APPROVAL` dengan `evaluation_error: null`.
+Evaluasi model pada deployment Docker melewati Redis FIFO dengan namespace default `agentgate:guardrail`. Redis hanya menyimpan tiket acak, bukan prompt, payload action, atau output model. Satu evaluasi memegang lease aktif; evaluasi lain menunggu sesuai urutan. Deterministic `BLOCK` tidak memanggil Qwen sehingga tidak perlu menunggu antrean. Mekanisme ini berlaku untuk pemanggilan guardrail dari chat, Telegram, action langsung, dan jalur lain yang memakai backend `agentgate`.
+
+Alasan keputusan dapat menggabungkan hasil rule, domain/risk hint, dan detector. Jika request detector Qwen timeout, engine mencatat timeout, meminta Ollama meng-unload Qwen dengan `keep_alive: 0`, menunggu respons unload selesai, lalu mencoba model fallback Gemma paling banyak satu kali. Kegagalan unload menghentikan fallback; kegagalan fallback dicatat sebagai kegagalan detector dan engine tetap fail-closed. Pesan timeout tidak berarti detector sengaja dinonaktifkan. Jika Redis tidak tersedia atau waktu tunggu antrean habis, detector tidak dijalankan dan aksi ditahan secara fail-closed sebagai `NEED_APPROVAL` dengan `evaluation_error` yang menjelaskan kegagalan antrean. Tidak ada fallback yang mengeksekusi action tanpa slot Redis.
+
+Deployment aktif memakai `AGENTGATE_LLM_DETECTOR_TIMEOUT=200`, `AGENTGATE_LLM_FALLBACK_ATTEMPTS=1`, `AGENTGATE_REDIS_QUEUE_WAIT_TIMEOUT=3600`, lease minimum 660 detik, dan `AGENT_RUN_TIMEOUT_SEC=7200`. Timeout berlaku per request model. Lease otomatis dinaikkan agar mencakup timeout Qwen, unload, dan satu timeout Gemma ketika fallback dipakai. Nilai timeout run harus tetap lebih besar daripada waktu tunggu antrean ditambah batas evaluasi model tersebut. Batas 200 detik memberi ruang di atas hasil pengukuran sekitar 186 detik; bila Qwen melewati batas itu, sistem menjalankan urutan unload lalu fallback sesuai konfigurasi.
 
 ## 9. Flow action terstruktur langsung
 
-Gunakan `POST /api/v1/actions/run` bila pemanggil sudah mengetahui konektor, jenis action, dan payload tanpa perlu planner chat.
+Gunakan `POST /api/v1/actions/run` bila pemanggil sudah mengetahui konektor, jenis action, dan payload tanpa perlu planner chat. Endpoint ini tetap synchronous: koneksi HTTP menunggu giliran Redis, evaluasi Qwen, eksekusi, dan audit. Untuk flow UI yang tidak boleh menahan satu request selama inferensi CPU, gunakan `POST /api/v1/chat/execute`, yang segera mengembalikan `run_id`, lalu pantau state atau SSE.
 
 ```http
 POST /api/v1/actions/run
@@ -649,9 +657,9 @@ Endpoint `POST /api/v1/sessions/heartbeat`, `POST /api/v1/telegram/contact-invit
 
 `GET /api/v1/chat/execute/{run_id}` dan endpoint resource tunggal lain memakai 404 untuk ID yang tidak ditemukan atau berbeda scope. Sebaliknya, `GET /api/v1/runs/{run_id}/actions` adalah endpoint koleksi: implementasi mengambil audit berdasarkan `run_id`, memfilter scope, lalu mengembalikan list. Karena itu run yang tidak ada, run yang belum memiliki audit, dan run dengan audit yang seluruhnya berada di scope lain sama-sama menghasilkan HTTP 200 dengan `[]`.
 
-Run dan penantian jawaban juga memiliki timeout berdasarkan konfigurasi `AGENT_RUN_TIMEOUT_SEC` dan `AGENT_WAIT_RESPONSE_TIMEOUT_SEC`. Kode lokal menetapkan run `error` untuk timeout keseluruhan, dan `failed` untuk timeout menunggu jawaban. Jangan membiarkan UI terus menampilkan menunggu setelah status terminal.
+Run dan penantian jawaban juga memiliki timeout berdasarkan konfigurasi `AGENT_RUN_TIMEOUT_SEC` dan `AGENT_WAIT_RESPONSE_TIMEOUT_SEC`. Kode lokal menetapkan run `error` untuk timeout keseluruhan, dan `failed` untuk timeout menunggu jawaban. Deployment aktif memakai timeout keseluruhan 7200 detik agar waktu tunggu FIFO dan inferensi Qwen tidak dibatalkan oleh nilai lama 900 detik. Jangan membiarkan UI terus menampilkan menunggu setelah status terminal.
 
-Planner dan detector guardrail memiliki timeout terpisah. Perubahan environment seperti `LLM_TIMEOUT` atau `AGENTGATE_LLM_DETECTOR_TIMEOUT` baru berlaku setelah proses/container API dibuat ulang. Selama evaluasi, live state tetap dapat dibaca dengan status step `running` dan `decision: null`. Pada uji callback Telegram, detector Qwen selesai tanpa `evaluation_error` dalam sekitar 348 detik; keterlambatan tombol berasal dari evaluasi guardrail, bukan webhook Telegram. Uji tersebut berjalan pada proses lama yang masih memuat timeout 600 detik. Deployment aktif telah direcreate dan sekarang memuat `AGENTGATE_LLM_DETECTOR_TIMEOUT=60`.
+Planner, waktu tunggu Redis, dan setiap request detector guardrail memiliki timeout terpisah. Perubahan environment seperti `LLM_TIMEOUT`, `AGENTGATE_REDIS_QUEUE_WAIT_TIMEOUT`, `AGENTGATE_LLM_DETECTOR_TIMEOUT`, atau `AGENTGATE_LLM_FALLBACK_ATTEMPTS` baru berlaku setelah proses/container API dibuat ulang. Selama menunggu antrean atau selama evaluasi, live state tetap dapat dibaca dengan status step `running` dan `decision: null`. Pada verifikasi 22 September 2026, request action nyata tercatat `queued`, `started`, lalu `finished`; Qwen menyelesaikan evaluasi dalam sekitar 186 detik, HTTP menghasilkan 200, dan daftar antrean kembali kosong. Deployment aktif sekarang memakai `AGENTGATE_LLM_DETECTOR_TIMEOUT=200` dan satu request fallback. Jika Qwen timeout, waktu tambahan untuk unload dan Gemma diperhitungkan oleh lease; jika seluruh jalur model gagal, keputusan ditahan untuk review.
 
 Tidak ada kontrak idempotency umum pada endpoint mulai chat/action. Pengulangan POST setelah timeout jaringan dapat mengeksekusi instruksi dua kali. Bila `run_id` sudah diperoleh, baca state/riwayat terlebih dahulu; deduplikasi webhook tidak berarti endpoint lain juga terdeduplikasi.
 
@@ -664,7 +672,7 @@ Hal berikut masih perlu diperhatikan saat mengintegrasikan deployment aktif:
 3. **Scenarios:** `v1/scenarios.py` masih berisi placeholder; belum ada endpoint scenarios di OpenAPI maupun router utama.
 4. **OAuth global:** tabel `oauth_tokens` menyimpan satu record token global per provider; token GitHub, Gmail, dan Calendar belum dipisahkan per browser session.
 5. **Run inbound Telegram:** pesan langsung ke bot membuat run channel Telegram yang belum dipetakan ke `X-AgentGate-Session`; run tersebut memakai konteks legacy dan tidak muncul dalam live state sesi browser.
-6. **Registry run in-memory:** state run aktif, waiter approval, dan deduplikasi callback Telegram tidak bertahan saat proses API direstart. Audit yang sudah ditulis tetap berada di database. State OAuth authorize sudah persisten di database dan tidak termasuk keterbatasan ini.
+6. **Registry run dan work item tetap in-memory:** Redis menyimpan tiket FIFO dan lease, bukan payload pekerjaan. State run aktif, evaluasi yang belum selesai, waiter approval, dan deduplikasi callback Telegram tidak bertahan saat proses API direstart. Lease/tiket yang ditinggalkan memiliki TTL dan dibersihkan, tetapi client perlu memulai run baru. Audit yang sudah ditulis tetap berada di database. State OAuth authorize sudah persisten di database dan tidak termasuk keterbatasan ini.
 7. **Metadata polling belum lengkap:** response model state menyediakan `sanitize_fields` dan `audit_event`, tetapi serializer aktif tidak meneruskan nilainya. Gunakan SSE `awaiting_input.data.fields` untuk nama field input dan endpoint audit untuk catatan final.
 
 ## 16. Urutan integrasi yang disarankan
